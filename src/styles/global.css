@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Brand */
+    --color-brand-50:  #eef4ff;
+    --color-brand-100: #dbe6ff;
+    --color-brand-500: #3a64f0;
+    --color-brand-600: #2f54d8;
+    --color-brand-700: #2444b0;
+    --color-brand-900: #1a2f7a;
+
+    /* Surface */
+    --color-surface:     #ffffff;
+    --color-surface-alt: #f9fafb;
+    --color-border:      #e5e7eb;
+
+    /* Text */
+    --color-text-primary:   #111827;
+    --color-text-secondary: #6b7280;
+    --color-text-muted:     #9ca3af;
+
+    /* Severity */
+    --color-critical:   #ef4444;
+    --color-warning:    #f59e0b;
+    --color-suggestion: #0ea5e9;
+    --color-info:       #10b981;
+  }
+
+  .dark {
+    --color-surface:     #030712;
+    --color-surface-alt: #111827;
+    --color-border:      #1f2937;
+    --color-text-primary:   #f9fafb;
+    --color-text-secondary: #d1d5db;
+    --color-text-muted:     #6b7280;
+  }
+
+  html { font-family: theme('fontFamily.sans'); }
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-text-primary);
+  }
+}
+
+/* Pretendard 가변 폰트 (self-host) — public/fonts/pretendard/PretendardVariable.woff2 */
+@font-face {
+  font-family: 'Pretendard';
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  src: url('/fonts/pretendard/PretendardVariable.woff2') format('woff2-variations');
+}
