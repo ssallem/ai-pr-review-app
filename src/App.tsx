@@ -17,6 +17,11 @@
  *  - Result/Settings placeholder 제거 → 실제 컴포넌트 (Result, Settings) 사용.
  *  - About 화면 추가 + AppHeader 에 정보 버튼 신설.
  *  - Settings 에서 API 키 삭제 시 onApiKeyChanged 콜백으로 onboarding 으로 복귀.
+ *
+ * Reviewing UX 개선:
+ *  - reviewing 화면을 별도 Reviewing 컴포넌트로 분리 (Input 재사용 폐기).
+ *  - handleStartReview 가 단계별 setReviewProgress 호출 (fetching/parsing/analyzing/finishing).
+ *  - reviewMeta 를 diff fetch 직후 set — Reviewing 화면 상단에 repo/PR title 즉시 표시.
  */
 import { useEffect, useState } from 'react';
 
@@ -25,6 +30,7 @@ import AppHeader from './components/AppHeader';
 import Input from './components/Input';
 import Onboarding from './components/Onboarding';
 import Result from './components/Result';
+import Reviewing, { type ReviewProgress } from './components/Reviewing';
 import Settings from './components/Settings';
 import { checkClaudeCode, reviewDiffWithClaudeCode } from './lib/claudeCode';
 import {
@@ -52,6 +58,8 @@ type Screen = 'onboarding' | 'input' | 'reviewing' | 'result' | 'settings' | 'ab
 interface ReviewMeta {
   prTitle: string;
   prUrl: string;
+  /** 'owner/repo' — reviewing 화면 상단 표시용. */
+  repoName?: string;
 }
 
 export default function App() {
@@ -61,6 +69,11 @@ export default function App() {
   const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null);
   const [reviewMeta, setReviewMeta] = useState<ReviewMeta | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  // 단계별 진행 상태 — Reviewing 화면이 단계 timeline 으로 표시.
+  const [reviewProgress, setReviewProgress] = useState<ReviewProgress>({
+    stage: 'fetching',
+    message: 'GitHub에 연결 중...',
+  });
 
   // 첫 부팅: 다크모드 + 인증 모드 확인.
   // - authMode='claude-code': Claude Code CLI 가용성 체크 → 가능 시 input, 아니면 onboarding
@@ -105,6 +118,7 @@ export default function App() {
 
     setScreen('reviewing');
     setReviewError(null);
+    setReviewProgress({ stage: 'fetching', message: 'GitHub에 연결 중...' });
 
     try {
       const settings = getSettings();
@@ -113,21 +127,72 @@ export default function App() {
       const githubToken = await getGithubToken();
 
       // diff 로드 분기 — 종류별 GitHub API endpoint.
+      // 단계 1: fetching — 각 분기마다 진행 메시지 갱신.
       let diff: DiffPayload;
       let fallbackTitle: string;
+      let owner: string;
+      let repo: string;
       if (prParsed !== null) {
+        setReviewProgress({
+          stage: 'fetching',
+          message: `PR #${prParsed.number} diff 다운로드 중`,
+        });
         diff = await loadPRFromGitHub(prParsed, githubToken ?? undefined);
         fallbackTitle = `${prParsed.owner}/${prParsed.repo}#${prParsed.number}`;
+        owner = prParsed.owner;
+        repo = prParsed.repo;
       } else if (commitParsed !== null) {
+        setReviewProgress({
+          stage: 'fetching',
+          message: `commit ${commitParsed.sha.slice(0, 7)} diff 다운로드 중`,
+        });
         diff = await loadCommitFromGitHub(commitParsed, githubToken ?? undefined);
         fallbackTitle = `${commitParsed.owner}/${commitParsed.repo}@${commitParsed.sha.slice(0, 7)}`;
+        owner = commitParsed.owner;
+        repo = commitParsed.repo;
       } else if (compareParsed !== null) {
+        setReviewProgress({
+          stage: 'fetching',
+          message: `${compareParsed.base}...${compareParsed.head} diff 다운로드 중`,
+        });
         diff = await loadCompareFromGitHub(compareParsed, githubToken ?? undefined);
         fallbackTitle = `${compareParsed.owner}/${compareParsed.repo} ${compareParsed.base}...${compareParsed.head}`;
+        owner = compareParsed.owner;
+        repo = compareParsed.repo;
       } else {
         // 도달 불가 — 위에서 이미 거부됨. TS 좁히기용.
         throw new Error('어떤 URL 형식도 매치되지 않음 (내부 오류)');
       }
+
+      const reviewTitle = diff.meta.title || fallbackTitle;
+
+      // diff fetch 직후 reviewMeta 설정 — Reviewing 화면 상단에서 repo/PR title 표시.
+      // 기존엔 Claude 호출 후 set 했지만, 그러면 분석 중인 동안 화면이 비어있음.
+      setReviewMeta({
+        prTitle: reviewTitle,
+        prUrl: inputUrl,
+        repoName: `${owner}/${repo}`,
+      });
+
+      // 단계 2: parsing — 파일 수 / LOC / 파일 목록 진행 상태에 추가.
+      const totalLOC = diff.files.reduce((sum, f) => sum + f.additions + f.deletions, 0);
+      const filenames = diff.files.map((f) => f.filename);
+      setReviewProgress({
+        stage: 'parsing',
+        message: `파일 ${diff.files.length}개 · ${totalLOC.toLocaleString()} LOC 감지`,
+        fileCount: diff.files.length,
+        totalLOC,
+        filenames,
+      });
+
+      // 단계 3: analyzing — 가장 오래 걸리는 단계 (3~5분).
+      setReviewProgress({
+        stage: 'analyzing',
+        message: 'Claude가 한국어 리뷰 작성 중 (보통 3~5분)',
+        fileCount: diff.files.length,
+        totalLOC,
+        filenames,
+      });
 
       let result: ReviewResult;
       if (settings.authMode === 'claude-code') {
@@ -143,9 +208,15 @@ export default function App() {
         result = await reviewDiff(diff, apiKey, { model: settings.model });
       }
 
-      const reviewTitle = diff.meta.title || fallbackTitle;
+      // 단계 4: finishing — 결과 저장 및 화면 전환 직전.
+      setReviewProgress({
+        stage: 'finishing',
+        message: '결과 정리 중...',
+        fileCount: diff.files.length,
+        totalLOC,
+      });
+
       setReviewResult(result);
-      setReviewMeta({ prTitle: reviewTitle, prUrl: inputUrl });
       addRecentReview({
         id: crypto.randomUUID(),
         pr_url: inputUrl,
@@ -219,10 +290,11 @@ export default function App() {
           />
         )}
         {screen === 'reviewing' && (
-          <Input
-            onStart={(url) => void handleStartReview(url)}
-            isReviewing={true}
-            error={null}
+          <Reviewing
+            prTitle={reviewMeta?.prTitle}
+            prUrl={reviewMeta?.prUrl}
+            repoName={reviewMeta?.repoName}
+            progress={reviewProgress}
           />
         )}
         {screen === 'result' && reviewResult !== null && (
