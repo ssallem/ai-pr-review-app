@@ -3,15 +3,18 @@
  *
  * - severity별로 좌측 6px border + 옅은 severity 틴트 배경.
  * - location은 brand 색 monospace로 강조 (가독성).
- * - body는 인라인 마크다운(백틱 `code`, **strong**)을 HTML로 변환,
- *   나머지는 whitespace-pre-wrap. 코드 펜스(```)는 inline 변환에서 보호.
+ * - body는 marked 라이브러리로 GFM 마크다운 렌더 — 코드 펜스(```) 포함.
  * - 본문 line-height 1.8, p-5 padding, **strong** amber 하이라이트.
  *
- * 원본: web/src/components/report/IssueCard.astro (Phase 1-D-Components 포팅).
+ * 변경 이력:
+ *  - 2026-05: renderInlineFormatting → src/lib/markdown.ts 의 renderMarkdown 으로 교체.
+ *    이유: 멀티라인 코드 펜스 미렌더링 버그 — 자체 파서가 fence 를 placeholder 로
+ *    복원하기만 하고 <pre><code> 로 감싸지 않았음.
  */
 
 import type { FC } from 'react';
 import Badge from '../ui/Badge';
+import { renderMarkdown } from '../../lib/markdown';
 import type { Severity } from '../../lib/reviewer';
 
 interface Props {
@@ -48,67 +51,11 @@ const BADGE_COLOR_MAP: Record<Severity, 'red' | 'amber' | 'sky'> = {
   SUGGESTION: 'sky',
 };
 
-/**
- * HTML 이스케이프 후 인라인 마크다운 처리.
- *  - 백틱(`...`) → <code>
- *  - **strong** → <strong> + amber 하이라이트
- *
- * 코드 펜스(``` ... ```) 안쪽은 inline 변환에서 보호하기 위해 placeholder로 격리.
- * 백틱을 먼저 변환해 코드 안의 ** 가 strong으로 잘못 바뀌는 사고를 차단.
- * 시스템 경계 검증(골든 룰 6): dangerouslySetInnerHTML 이전에 모든 입력을 escape.
- */
-function renderInlineFormatting(text: string): string {
-  const escape = (s: string): string =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  // 코드 펜스를 placeholder로 추출
-  const fences: string[] = [];
-  const fencePattern = /```[\s\S]*?```/g;
-  const withFencePlaceholders = text.replace(fencePattern, (m) => {
-    fences.push(m);
-    return ` FENCE${fences.length - 1} `;
-  });
-
-  // 이스케이프
-  const escaped = escape(withFencePlaceholders);
-
-  // 1) 인라인 백틱 → <code> 의 HTML 자체를 다시 CODE placeholder로 격리 (strong 단계 보호)
-  const codeBlocks: string[] = [];
-  const withCodePlaceholders = escaped.replace(
-    /`([^`\n]+)`/g,
-    (_m, inner: string) => {
-      const html =
-        '<code class="rounded bg-surface-alt px-1.5 py-0.5 text-[0.92em] font-mono text-brand-700 dark:text-brand-100">' +
-        inner +
-        '</code>';
-      codeBlocks.push(html);
-      return ` CODE${codeBlocks.length - 1} `;
-    },
-  );
-
-  // 2) **strong** → <strong> + amber 하이라이트
-  const withStrong = withCodePlaceholders.replace(
-    /\*\*([^*\n]+)\*\*/g,
-    '<strong class="font-bold text-text-primary bg-amber-100/40 dark:bg-amber-900/30 px-1 rounded">$1</strong>',
-  );
-
-  // 3) CODE placeholder 복원
-  const withCode = withStrong.replace(
-    / CODE(\d+) /g,
-    (_m, idx: string) => codeBlocks[Number(idx)] ?? '',
-  );
-
-  // 4) FENCE placeholder를 원래 펜스(이스케이프 후)로 복원
-  return withCode.replace(/ FENCE(\d+) /g, (_m, idx: string) => {
-    const original = fences[Number(idx)] ?? '';
-    return escape(original);
-  });
-}
-
 const IssueCard: FC<Props> = ({ id, severity, location, body, isOpen = false }) => {
   const variant = VARIANT_MAP[severity];
   const badgeColor = BADGE_COLOR_MAP[severity];
-  const renderedBody = renderInlineFormatting(body);
+  // marked 출력은 자체 escape + 우리 renderer 에서 추가 escape — XSS 1차 차단.
+  const renderedBody = renderMarkdown(body);
 
   return (
     <details
@@ -139,7 +86,7 @@ const IssueCard: FC<Props> = ({ id, severity, location, body, isOpen = false }) 
       </summary>
 
       <div
-        className="px-5 pb-5 text-[15px] text-text-primary whitespace-pre-wrap"
+        className="px-5 pb-5 text-[15px] text-text-primary"
         style={{ lineHeight: 1.8 }}
         dangerouslySetInnerHTML={{ __html: renderedBody }}
       />

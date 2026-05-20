@@ -302,6 +302,7 @@ export default function App() {
             result={reviewResult}
             prTitle={reviewMeta?.prTitle}
             prUrl={reviewMeta?.prUrl}
+            repoName={reviewMeta?.repoName}
             onNewReview={handleNewReview}
           />
         )}
