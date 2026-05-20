@@ -86,8 +86,7 @@ const IssueCard: FC<Props> = ({ id, severity, location, body, isOpen = false }) 
       </summary>
 
       <div
-        className="px-5 pb-5 text-[15px] text-text-primary"
-        style={{ lineHeight: 1.8 }}
+        className="markdown-body px-5 pb-5 text-[15px]"
         dangerouslySetInnerHTML={{ __html: renderedBody }}
       />
     </details>
