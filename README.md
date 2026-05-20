@@ -3,7 +3,6 @@
 > Claude로 한국어 PR 리뷰를 자동화하는 데스크톱 앱 — Tauri 2 기반
 
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/ssallem?label=Sponsor&logo=GitHub&color=ea4aaa)](https://github.com/sponsors/ssallem)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a-Coffee-yellow.svg?logo=buymeacoffee)](https://buymeacoffee.com/ssallem)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Made by FirstNode](https://img.shields.io/badge/Made_by-FirstNode-3a64f0.svg)](https://ai-review-kit.pages.dev)
 
@@ -76,7 +75,6 @@ npm run tauri build
 이 도구가 도움됐다면:
 
 - [GitHub Sponsors](https://github.com/sponsors/ssallem)
-- [Buy Me a Coffee](https://buymeacoffee.com/ssallem)
 - 카카오페이 송금 (앱 안 About 화면의 QR 코드)
 
 ## 라이선스
