@@ -23,10 +23,12 @@ import { useEffect, useRef, useState, type FC } from 'react';
 
 import {
   listPRs,
+  listRecentCommits,
   parseCommitUrl,
   parseCompareUrl,
   parsePRUrl,
   parseRepoUrl,
+  type CommitSummary,
   type PRSummary,
   type ParsedRepoUrl,
 } from '../lib/githubClient';
@@ -47,6 +49,9 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
   const [prList, setPrList] = useState<PRSummary[] | null>(null);
   const [loadingPRs, setLoadingPRs] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  // PR 0건 fallback — 1인 개발자(본인 repo에 PR 안 만듦) 워크플로우 지원.
+  const [commitList, setCommitList] = useState<CommitSummary[] | null>(null);
+  const [loadingCommits, setLoadingCommits] = useState(false);
   // 동일 repo 에 대한 중복 fetch 방지 (useEffect debounce 보조).
   const lastFetchedRepoRef = useRef<string | null>(null);
 
@@ -70,6 +75,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
     if (repoParsed === null) {
       lastFetchedRepoRef.current = null;
       setPrList(null);
+      setCommitList(null);
       setListError(null);
       return;
     }
@@ -79,6 +85,8 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
 
     const timer = window.setTimeout(() => {
       lastFetchedRepoRef.current = key;
+      // 새 repo → commit fallback 상태 초기화 (다음 effect 가 PR 0건 감지 시 재로드).
+      setCommitList(null);
       void fetchPRs(repoParsed);
     }, 350);
 
@@ -86,6 +94,21 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
     // 의도적으로 repoParsed 객체 동일성보다 owner/repo 문자열에 의존.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoParsed?.owner, repoParsed?.repo]);
+
+  // PR 0건 감지 시 자동으로 최근 commit 10건 fetch — 1인 개발자 워크플로우 fallback.
+  useEffect(() => {
+    if (
+      repoParsed !== null &&
+      prList !== null &&
+      prList.length === 0 &&
+      commitList === null &&
+      !loadingCommits
+    ) {
+      void fetchCommits(repoParsed);
+    }
+    // 의도적으로 repoParsed 객체 동일성보다 owner/repo 문자열에 의존.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prList, repoParsed?.owner, repoParsed?.repo]);
 
   const fetchPRs = async (parsed: ParsedRepoUrl): Promise<void> => {
     setLoadingPRs(true);
@@ -102,6 +125,26 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
     }
   };
 
+  const fetchCommits = async (parsed: ParsedRepoUrl): Promise<void> => {
+    setLoadingCommits(true);
+    setListError(null);
+    try {
+      const token = await getGithubToken();
+      const commits = await listRecentCommits(
+        parsed.owner,
+        parsed.repo,
+        token ?? undefined,
+        10,
+      );
+      setCommitList(commits);
+    } catch (e) {
+      setListError(e instanceof Error ? e.message : String(e));
+      setCommitList(null);
+    } finally {
+      setLoadingCommits(false);
+    }
+  };
+
   const handleStart = (): void => {
     if (!isAnalyzable || isReviewing) return;
     onStart(trimmed);
@@ -112,6 +155,14 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
     setUrl(pr.html_url);
     setPrList(null);
     onStart(pr.html_url);
+  };
+
+  const handleCommitClick = (commit: CommitSummary): void => {
+    if (isReviewing) return;
+    setUrl(commit.html_url);
+    setCommitList(null);
+    setPrList(null);
+    onStart(commit.html_url);
   };
 
   const handleRecentClick = (prUrl: string): void => {
@@ -240,10 +291,49 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
         </p>
       )}
 
-      {repoParsed !== null && prList !== null && prList.length === 0 && !loadingPRs && (
-        <p className="mt-6 text-sm text-text-muted">
-          이 repo에 PR이 없습니다. PR을 만든 후 다시 시도하세요.
-        </p>
+      {/* PR 0건 fallback — 최근 commit 카드로 대체 (1인 개발자 워크플로우). */}
+      {repoParsed !== null && prList !== null && prList.length === 0 && (
+        <section className="mt-6" aria-label="repo 최근 커밋 fallback">
+          <div className="mb-4 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-400 text-sm text-text-primary">
+            💡 이 repo에 PR이 없어요. <strong>최근 커밋으로 대신 리뷰</strong>하실 수 있습니다.
+          </div>
+
+          {loadingCommits && (
+            <p className="text-sm text-text-secondary">최근 커밋 가져오는 중...</p>
+          )}
+
+          {commitList !== null && commitList.length > 0 && (
+            <>
+              <h3 className="text-xs font-bold uppercase tracking-widest text-text-secondary mb-3">
+                {repoParsed.owner}/{repoParsed.repo} 최근 커밋 {commitList.length}건
+              </h3>
+              <ul className="space-y-2">
+                {commitList.map((commit) => (
+                  <li key={commit.sha}>
+                    <button
+                      type="button"
+                      onClick={() => handleCommitClick(commit)}
+                      disabled={isReviewing}
+                      className="w-full text-left p-4 rounded-lg border border-border bg-surface hover:bg-surface-alt hover:border-brand-500 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-1">
+                        <span className="text-sm font-bold text-text-primary truncate">{commit.message}</span>
+                        <span className="shrink-0 text-xs font-mono text-text-muted">{commit.short_sha}</span>
+                      </div>
+                      <p className="text-xs text-text-secondary">
+                        {commit.author} · {formatDate(commit.date)}
+                      </p>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {commitList !== null && commitList.length === 0 && !loadingCommits && (
+            <p className="text-sm text-text-muted">최근 커밋도 0건입니다. 빈 repo로 보입니다.</p>
+          )}
+        </section>
       )}
 
       {recent.length > 0 && (

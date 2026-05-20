@@ -94,6 +94,26 @@ export interface PRSummary {
   changed_files: number;
 }
 
+/** listRecentCommits 응답 요약 — Input.tsx 커밋 카드 표시용 최소 필드. */
+export interface CommitSummary {
+  /** 40자 full SHA. */
+  sha: string;
+  /** 첫 7자 (UI 표시용). */
+  short_sha: string;
+  /** 커밋 메시지 첫 줄 (제목). */
+  message: string;
+  /** 전체 커밋 메시지 (제목 + 본문). */
+  full_message: string;
+  /** 작성자 이름 — GitHub login 우선, 없으면 commit.author.name. */
+  author: string;
+  /** 작성자 이메일 (있을 때만). */
+  author_email?: string;
+  /** committer.date (ISO 8601). */
+  date: string;
+  /** GitHub commit 페이지 URL. */
+  html_url: string;
+}
+
 // ===== 상수 =====
 
 /** Claude 컨텍스트 비용 보호용 임계값 — Python 봇과 동일. */
@@ -585,6 +605,93 @@ function toPRSummary(item: unknown): PRSummary | null {
     additions: typeof r.additions === 'number' ? r.additions : 0,
     deletions: typeof r.deletions === 'number' ? r.deletions : 0,
     changed_files: typeof r.changed_files === 'number' ? r.changed_files : 0,
+  };
+}
+
+/**
+ * Repo의 default branch에서 최근 commit 목록을 가져온다.
+ * PR 0건 fallback — 1인 개발자가 main 직접 commit하는 워크플로우 지원.
+ *
+ * @param owner - 'ssallem'
+ * @param repo - 'ssallem.github.io'
+ * @param token - 선택. private repo 또는 rate limit 회피 시 필요.
+ * @param perPage - 1~100 (기본 10). 범위 밖이면 클램프됨.
+ * @param branch - 선택. 미지정 시 GitHub default branch 사용.
+ * @returns CommitSummary 배열 — committer.date 내림차순(GitHub 기본).
+ * @throws Error - 401/403/404 및 rate limit (listPRs 와 동일 처리).
+ */
+export async function listRecentCommits(
+  owner: string,
+  repo: string,
+  token?: string,
+  perPage: number = 10,
+  branch?: string,
+): Promise<CommitSummary[]> {
+  const clamped = Math.max(1, Math.min(100, Math.floor(perPage)));
+  const params = new URLSearchParams({ per_page: String(clamped) });
+  if (branch) params.set('sha', branch);
+
+  const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?${params.toString()}`;
+  const headers = {
+    ...buildHeaders(token),
+    Accept: 'application/vnd.github+json',
+  };
+
+  const res = await fetch(url, { headers });
+  await throwIfBad(res, '커밋 목록');
+  const raw: unknown = await res.json();
+  if (!Array.isArray(raw)) {
+    throw new Error('GitHub 커밋 목록 응답이 배열이 아닙니다.');
+  }
+
+  return raw.map(toCommitSummary).filter((v): v is CommitSummary => v !== null);
+}
+
+/** GitHub commit list element → CommitSummary 변환. 필수 필드(sha) 누락 시 null. */
+function toCommitSummary(item: unknown): CommitSummary | null {
+  if (!item || typeof item !== 'object') return null;
+  const r = item as Record<string, unknown>;
+
+  const sha = typeof r.sha === 'string' ? r.sha : '';
+  if (!sha) return null;
+
+  const commit = r.commit as
+    | { message?: unknown; author?: { name?: unknown; email?: unknown; date?: unknown }; committer?: { date?: unknown } }
+    | undefined;
+  const ghAuthor = r.author as { login?: unknown } | null | undefined;
+
+  const fullMessage = typeof commit?.message === 'string' ? commit.message : '';
+  // 첫 줄만 — 제목(subject) 추출.
+  const firstLine = fullMessage.split('\n', 1)[0] ?? '';
+  const message = firstLine || `(빈 커밋 메시지)`;
+
+  // GitHub user login 우선, 없으면 commit.author.name fallback.
+  const loginRaw = ghAuthor && typeof ghAuthor.login === 'string' ? ghAuthor.login : '';
+  const commitAuthorName =
+    typeof commit?.author?.name === 'string' ? commit.author.name : '';
+  const author = loginRaw || commitAuthorName || '익명';
+
+  const authorEmail =
+    typeof commit?.author?.email === 'string' ? commit.author.email : undefined;
+
+  // committer.date 우선 (HEAD 순서와 일치), 없으면 author.date.
+  const committerDate =
+    typeof commit?.committer?.date === 'string' ? commit.committer.date : '';
+  const authorDate =
+    typeof commit?.author?.date === 'string' ? commit.author.date : '';
+  const date = committerDate || authorDate || '';
+
+  const htmlUrl = typeof r.html_url === 'string' ? r.html_url : '';
+
+  return {
+    sha,
+    short_sha: sha.slice(0, 7),
+    message,
+    full_message: fullMessage,
+    author,
+    author_email: authorEmail,
+    date,
+    html_url: htmlUrl,
   };
 }
 
