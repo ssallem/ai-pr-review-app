@@ -27,7 +27,15 @@ import Onboarding from './components/Onboarding';
 import Result from './components/Result';
 import Settings from './components/Settings';
 import { checkClaudeCode, reviewDiffWithClaudeCode } from './lib/claudeCode';
-import { loadPRFromGitHub, parsePRUrl } from './lib/githubClient';
+import {
+  loadCommitFromGitHub,
+  loadCompareFromGitHub,
+  loadPRFromGitHub,
+  parseCommitUrl,
+  parseCompareUrl,
+  parsePRUrl,
+  type DiffPayload,
+} from './lib/githubClient';
 import { reviewDiff, type ReviewResult } from './lib/reviewer';
 import {
   addRecentReview,
@@ -83,10 +91,15 @@ export default function App() {
     setScreen('input');
   };
 
-  const handleStartReview = async (prUrl: string): Promise<void> => {
-    const parsed = parsePRUrl(prUrl);
-    if (parsed === null) {
-      setReviewError('유효하지 않은 PR URL입니다.');
+  const handleStartReview = async (inputUrl: string): Promise<void> => {
+    // 4가지 형식 분기: PR / commit / compare / (그 외=거부).
+    // repo URL 은 Input.tsx 에서 PR 목록을 보여줄 뿐 onStart 로 들어오지 않는다.
+    const prParsed = parsePRUrl(inputUrl);
+    const commitParsed = !prParsed ? parseCommitUrl(inputUrl) : null;
+    const compareParsed = !prParsed && !commitParsed ? parseCompareUrl(inputUrl) : null;
+
+    if (!prParsed && !commitParsed && !compareParsed) {
+      setReviewError('유효한 GitHub PR / commit / compare URL이 아닙니다.');
       return;
     }
 
@@ -98,7 +111,23 @@ export default function App() {
 
       // GitHub 토큰은 선택. 없으면 비인증 호출(rate limit 60/h).
       const githubToken = await getGithubToken();
-      const diff = await loadPRFromGitHub(parsed, githubToken ?? undefined);
+
+      // diff 로드 분기 — 종류별 GitHub API endpoint.
+      let diff: DiffPayload;
+      let fallbackTitle: string;
+      if (prParsed !== null) {
+        diff = await loadPRFromGitHub(prParsed, githubToken ?? undefined);
+        fallbackTitle = `${prParsed.owner}/${prParsed.repo}#${prParsed.number}`;
+      } else if (commitParsed !== null) {
+        diff = await loadCommitFromGitHub(commitParsed, githubToken ?? undefined);
+        fallbackTitle = `${commitParsed.owner}/${commitParsed.repo}@${commitParsed.sha.slice(0, 7)}`;
+      } else if (compareParsed !== null) {
+        diff = await loadCompareFromGitHub(compareParsed, githubToken ?? undefined);
+        fallbackTitle = `${compareParsed.owner}/${compareParsed.repo} ${compareParsed.base}...${compareParsed.head}`;
+      } else {
+        // 도달 불가 — 위에서 이미 거부됨. TS 좁히기용.
+        throw new Error('어떤 URL 형식도 매치되지 않음 (내부 오류)');
+      }
 
       let result: ReviewResult;
       if (settings.authMode === 'claude-code') {
@@ -114,13 +143,13 @@ export default function App() {
         result = await reviewDiff(diff, apiKey, { model: settings.model });
       }
 
-      const prTitle = diff.meta.title || `${parsed.owner}/${parsed.repo}#${parsed.number}`;
+      const reviewTitle = diff.meta.title || fallbackTitle;
       setReviewResult(result);
-      setReviewMeta({ prTitle, prUrl });
+      setReviewMeta({ prTitle: reviewTitle, prUrl: inputUrl });
       addRecentReview({
         id: crypto.randomUUID(),
-        pr_url: prUrl,
-        pr_title: prTitle,
+        pr_url: inputUrl,
+        pr_title: reviewTitle,
         date: new Date().toISOString(),
         critical: result.issues.filter((i) => i.severity === 'CRITICAL').length,
         warning: result.issues.filter((i) => i.severity === 'WARNING').length,

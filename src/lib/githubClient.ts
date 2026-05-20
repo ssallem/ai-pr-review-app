@@ -58,6 +58,23 @@ export interface ParsedRepoUrl {
   repo: string;
 }
 
+/** parseCommitUrl 결과 — 단일 커밋(PR 아님). */
+export interface ParsedCommitUrl {
+  owner: string;
+  repo: string;
+  /** 7~40자 hex (소문자 정규화). */
+  sha: string;
+}
+
+/** parseCompareUrl 결과 — 두 ref 사이 비교(PR 아님). */
+export interface ParsedCompareUrl {
+  owner: string;
+  repo: string;
+  /** branch 이름 · tag · SHA. URL-디코딩됨 (feature%2Fx → feature/x). */
+  base: string;
+  head: string;
+}
+
 /** listPRs 응답 요약 — Input.tsx 카드 표시에 충분한 최소 필드. */
 export interface PRSummary {
   number: number;
@@ -198,6 +215,120 @@ export function parseRepoUrl(input: string): ParsedRepoUrl | null {
   return null;
 }
 
+// ===== Commit URL 파싱 =====
+
+// 단축형 'owner/repo@sha' — '.git' 접미사도 허용.
+const COMMIT_SHORT_RE = /^([^/\s]+)\/([^/@\s]+?)(?:\.git)?@([a-f0-9]{7,40})$/i;
+const SHA_RE = /^[a-f0-9]{7,40}$/i;
+
+/**
+ * GitHub commit URL을 파싱한다.
+ * 지원:
+ *   - https://github.com/{owner}/{repo}/commit/{sha}
+ *   - https://github.com/{owner}/{repo}/commit/{sha}.diff (확장자 자동 제거)
+ *   - https://github.com/{owner}/{repo}/commit/{sha}.patch
+ *   - {owner}/{repo}@{sha}  (단축형)
+ *
+ * 안전한 파싱을 위해 정규식 대신 URL 생성자 + pathname 분할 사용.
+ */
+export function parseCommitUrl(input: string): ParsedCommitUrl | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  // 1) 단축형
+  const short = trimmed.match(COMMIT_SHORT_RE);
+  if (short) {
+    return {
+      owner: short[1]!,
+      repo: stripGitSuffix(short[2]!),
+      sha: short[3]!.toLowerCase(),
+    };
+  }
+
+  // 2) 풀 URL — 시스템 경계 검증을 위해 URL 생성자 사용
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  if (parsed.hostname !== 'github.com') return null;
+
+  const segments = parsed.pathname.replace(/^\/+/, '').replace(/\/+$/, '').split('/');
+  // [owner, repo, 'commit', sha]
+  if (segments.length !== 4) return null;
+  if (segments[2] !== 'commit') return null;
+
+  const owner = segments[0]!;
+  const repo = stripGitSuffix(segments[1]!);
+  // .diff / .patch 확장자 제거
+  const sha = segments[3]!.replace(/\.(diff|patch)$/i, '');
+
+  if (!SHA_RE.test(sha)) return null;
+  if (!owner || !repo) return null;
+
+  return { owner, repo, sha: sha.toLowerCase() };
+}
+
+// ===== Compare URL 파싱 =====
+
+/**
+ * GitHub compare URL을 파싱한다.
+ * 지원:
+ *   - https://github.com/{owner}/{repo}/compare/{base}...{head}
+ *   - https://github.com/{owner}/{repo}/compare/{base}..{head}   (점 2개도)
+ *
+ * base/head 는 branch 이름(슬래시 포함 가능) · tag · SHA. URL-인코딩 슬래시(`%2F`)도 허용.
+ */
+export function parseCompareUrl(input: string): ParsedCompareUrl | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  if (parsed.hostname !== 'github.com') return null;
+
+  const cleaned = parsed.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
+  const segments = cleaned.split('/');
+  // 최소: [owner, repo, 'compare', spec...]
+  if (segments.length < 4) return null;
+  if (segments[2] !== 'compare') return null;
+
+  const owner = segments[0]!;
+  const repo = stripGitSuffix(segments[1]!);
+  if (!owner || !repo) return null;
+
+  // base/head 둘 다 '/'를 포함할 수 있어 segments[3..] 를 join 후 ...(또는 ..)로 분할
+  const spec = segments.slice(3).join('/');
+  const split = splitCompareSpec(spec);
+  if (split === null) return null;
+
+  const base = decodeURIComponent(split.base);
+  const head = decodeURIComponent(split.head);
+  if (!base || !head) return null;
+
+  return { owner, repo, base, head };
+}
+
+/** compare spec(`base...head` 또는 `base..head`) 분할. 3-dot 우선. */
+function splitCompareSpec(spec: string): { base: string; head: string } | null {
+  const triple = spec.indexOf('...');
+  if (triple >= 0) {
+    return { base: spec.slice(0, triple), head: spec.slice(triple + 3) };
+  }
+  const dbl = spec.indexOf('..');
+  if (dbl >= 0) {
+    return { base: spec.slice(0, dbl), head: spec.slice(dbl + 2) };
+  }
+  return null;
+}
+
 // ===== 언어 감지 =====
 
 /** Python `_detect_language` 와 동일 동작. */
@@ -260,6 +391,135 @@ interface RawPRMeta {
   user?: { login?: string };
   base?: { ref?: string };
   head?: { ref?: string };
+}
+
+/** GitHub commit API 응답 — 필요한 필드만. */
+interface RawCommitMeta {
+  sha?: string;
+  html_url?: string;
+  commit?: {
+    message?: string;
+    author?: { name?: string; email?: string };
+  };
+  author?: { login?: string } | null;
+  parents?: Array<{ sha?: string }>;
+}
+
+/** GitHub compare API 응답 — 필요한 필드만. */
+interface RawCompareMeta {
+  html_url?: string;
+  commits?: Array<{
+    sha?: string;
+    commit?: { author?: { name?: string } };
+    author?: { login?: string } | null;
+  }>;
+}
+
+/**
+ * GitHub REST API로 단일 commit 메타 + diff 를 가져온다.
+ * PR 없는 1인 개발자 워크플로우 지원 (main 직접 commit).
+ *
+ * @param parsed - parseCommitUrl 결과.
+ * @param githubToken - 선택. 비어있으면 비인증 호출(rate limit 60/h).
+ * @returns DiffPayload — pr_number=0 으로 표시.
+ * @throws Error - 404(commit 미존재) / 401 / 403(rate limit) 등.
+ */
+export async function loadCommitFromGitHub(
+  parsed: ParsedCommitUrl,
+  githubToken?: string,
+): Promise<DiffPayload> {
+  const apiBase = `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}/commits/${parsed.sha}`;
+  const baseHeaders = buildHeaders(githubToken);
+
+  // 1) 메타
+  const metaRes = await fetch(apiBase, {
+    headers: { ...baseHeaders, Accept: 'application/vnd.github+json' },
+  });
+  await throwIfBad(metaRes, '커밋 메타');
+  const metaJson = (await metaRes.json()) as RawCommitMeta;
+
+  // 2) raw diff
+  const diffRes = await fetch(apiBase, {
+    headers: { ...baseHeaders, Accept: 'application/vnd.github.v3.diff' },
+  });
+  await throwIfBad(diffRes, '커밋 diff');
+  const rawDiffText = await diffRes.text();
+
+  const message = metaJson.commit?.message ?? '';
+  // 첫 줄을 title 로 (commit message 관례).
+  const firstLine = message.split('\n', 1)[0] ?? '';
+  const title = firstLine || `commit ${parsed.sha.slice(0, 7)}`;
+  const parentSha = metaJson.parents?.[0]?.sha ?? '';
+  const author = metaJson.author?.login ?? metaJson.commit?.author?.name ?? '';
+  const fullSha = metaJson.sha ?? parsed.sha;
+  const htmlUrl = metaJson.html_url ??
+    `https://github.com/${parsed.owner}/${parsed.repo}/commit/${parsed.sha}`;
+
+  const meta: PRMetadata = {
+    title,
+    author,
+    base_ref: parentSha ? parentSha.slice(0, 7) : 'parent',
+    head_ref: fullSha.slice(0, 7),
+    html_url: htmlUrl,
+    pr_number: 0, // PR 아님 — Result UI에서 분기 가능.
+    body: message,
+  };
+
+  return buildPayload(rawDiffText, meta);
+}
+
+/**
+ * GitHub REST API로 compare(base...head) 메타 + diff 를 가져온다.
+ * 브랜치 비교 / 두 SHA 사이 변경분 분석에 사용.
+ *
+ * @param parsed - parseCompareUrl 결과.
+ * @param githubToken - 선택. private repo / rate limit 회피 시 필요.
+ * @returns DiffPayload — pr_number=0.
+ * @throws Error - 404(ref 미존재) / 401 / 403 등.
+ */
+export async function loadCompareFromGitHub(
+  parsed: ParsedCompareUrl,
+  githubToken?: string,
+): Promise<DiffPayload> {
+  // base/head 는 ref 명 — 슬래시 포함 가능. '...' 구분자는 인코딩 금지.
+  const baseEnc = encodeURIComponent(parsed.base);
+  const headEnc = encodeURIComponent(parsed.head);
+  const apiUrl =
+    `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}/compare/${baseEnc}...${headEnc}`;
+  const baseHeaders = buildHeaders(githubToken);
+
+  // 1) 메타
+  const metaRes = await fetch(apiUrl, {
+    headers: { ...baseHeaders, Accept: 'application/vnd.github+json' },
+  });
+  await throwIfBad(metaRes, 'compare 메타');
+  const metaJson = (await metaRes.json()) as RawCompareMeta;
+
+  // 2) raw diff
+  const diffRes = await fetch(apiUrl, {
+    headers: { ...baseHeaders, Accept: 'application/vnd.github.v3.diff' },
+  });
+  await throwIfBad(diffRes, 'compare diff');
+  const rawDiffText = await diffRes.text();
+
+  const commits = metaJson.commits ?? [];
+  const lastCommit = commits.length > 0 ? commits[commits.length - 1] : undefined;
+  const author =
+    lastCommit?.author?.login ?? lastCommit?.commit?.author?.name ?? '비교 보기';
+  const htmlUrl = metaJson.html_url ??
+    `https://github.com/${parsed.owner}/${parsed.repo}/compare/${parsed.base}...${parsed.head}`;
+
+  const meta: PRMetadata = {
+    title: `Compare ${parsed.base}...${parsed.head}`,
+    author,
+    base_ref: parsed.base,
+    head_ref: parsed.head,
+    html_url: htmlUrl,
+    pr_number: 0,
+    body: commits.length > 0 ? `${commits.length}개 커밋 비교` : '',
+  };
+
+  return buildPayload(rawDiffText, meta);
 }
 
 /**
@@ -342,7 +602,9 @@ async function throwIfBad(res: Response, kind: string): Promise<void> {
   const status = res.status;
   // GitHub rate limit은 403 + X-RateLimit-Remaining: 0 형태로 옴.
   const remaining = res.headers.get('x-ratelimit-remaining');
-  if (status === 404) throw new Error('PR not found (404): URL 또는 접근 권한을 확인하세요');
+  if (status === 404) {
+    throw new Error(`${kind} not found (404): URL 또는 접근 권한을 확인하세요`);
+  }
   if (status === 401) throw new Error('Invalid token (401): GitHub 토큰을 다시 확인하세요');
   if (status === 403 && remaining === '0') {
     throw new Error('Rate limit (403): GitHub API 호출 한도 초과. 토큰을 추가하거나 잠시 후 재시도하세요');

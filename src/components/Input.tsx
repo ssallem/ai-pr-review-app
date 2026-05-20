@@ -1,27 +1,30 @@
 /**
- * 메인 입력 화면 — GitHub PR URL 또는 repo URL → 리뷰 시작.
+ * 메인 입력 화면 — GitHub PR / commit / compare / repo URL → 리뷰 시작.
  *
  * 책임:
- *  - URL 입력 + 실시간 검증 (parsePRUrl 우선, 그 다음 parseRepoUrl).
- *  - PR URL 감지 시 즉시 "리뷰 시작" 버튼 활성.
+ *  - URL 입력 + 실시간 검증 (PR → commit → compare → repo 순서로 분기).
+ *  - PR/commit/compare URL 감지 시 즉시 "리뷰 시작" 버튼 활성.
  *  - Repo URL 감지 시 최근 PR 20건 자동 fetch + 카드 목록 표시.
  *  - 카드 클릭 → 해당 PR URL 로 리뷰 시작.
- *  - "리뷰 시작" 버튼 / Enter → 부모 onStart 콜백 호출.
+ *  - "리뷰 시작" 버튼 / Enter → 부모 onStart 콜백 호출 (URL 문자열 그대로 전달).
  *  - 최근 리뷰 5건 표시 (재실행 편의).
  *  - 로딩 상태 (isReviewing) / 에러 (error) 표시.
+ *  - 빈 입력 시 4가지 지원 URL 형식 hint.
  *
  * 단방향 데이터 흐름:
  *  - 입력 상태(useState)는 로컬, 리뷰 실행/결과는 부모(App.tsx)가 보유.
  *  - props.isReviewing 이 true→false 로 떨어질 때 최근 목록 다시 로드.
  *
  * 시스템 경계 검증:
- *  - URL 은 parsePRUrl / parseRepoUrl 로 검증 후에만 전달.
+ *  - URL 은 parsePRUrl / parseCommitUrl / parseCompareUrl / parseRepoUrl 로 검증 후에만 전달.
  *  - listPRs 응답은 githubClient.ts 의 toPRSummary 에서 unknown 검증.
  */
 import { useEffect, useRef, useState, type FC } from 'react';
 
 import {
   listPRs,
+  parseCommitUrl,
+  parseCompareUrl,
   parsePRUrl,
   parseRepoUrl,
   type PRSummary,
@@ -53,9 +56,14 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
   }, [isReviewing]);
 
   const trimmed = url.trim();
+  // 우선순위: PR → commit → compare → repo. (commit 단축형 'owner/repo@sha' 가 repo 단축형보다 먼저)
   const prParsed = trimmed ? parsePRUrl(trimmed) : null;
-  const repoParsed: ParsedRepoUrl | null = !prParsed && trimmed ? parseRepoUrl(trimmed) : null;
-  const isPrValid = prParsed !== null;
+  const commitParsed = !prParsed && trimmed ? parseCommitUrl(trimmed) : null;
+  const compareParsed = !prParsed && !commitParsed && trimmed ? parseCompareUrl(trimmed) : null;
+  const repoParsed: ParsedRepoUrl | null =
+    !prParsed && !commitParsed && !compareParsed && trimmed ? parseRepoUrl(trimmed) : null;
+  // PR/commit/compare 셋 중 하나면 즉시 분석 가능.
+  const isAnalyzable = prParsed !== null || commitParsed !== null || compareParsed !== null;
 
   // Repo URL 감지 시 자동 fetch (debounce 350ms).
   useEffect(() => {
@@ -95,7 +103,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
   };
 
   const handleStart = (): void => {
-    if (!isPrValid || isReviewing) return;
+    if (!isAnalyzable || isReviewing) return;
     onStart(trimmed);
   };
 
@@ -113,12 +121,12 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <header className="mb-8">
-        <p className="text-xs font-bold uppercase tracking-widest text-brand-500 mb-2">PR 리뷰</p>
+        <p className="text-xs font-bold uppercase tracking-widest text-brand-500 mb-2">코드 리뷰</p>
         <h2 className="text-3xl sm:text-4xl font-extrabold text-text-primary leading-tight">
-          GitHub PR 또는 repo 링크를 붙여넣으세요
+          GitHub PR · commit · compare · repo 링크
         </h2>
         <p className="mt-3 text-text-secondary">
-          PR 링크면 즉시 리뷰. repo 링크면 최근 PR 목록을 보여줍니다. (약 3~5분 소요)
+          PR / commit / compare URL 또는 repo 링크를 붙여넣으세요. 약 3~5분 소요.
         </p>
       </header>
 
@@ -132,7 +140,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') handleStart(); }}
-          placeholder="https://github.com/owner/repo/pull/123 또는 https://github.com/owner/repo"
+          placeholder="https://github.com/owner/repo/pull/123 또는 /commit/abc 또는 /compare/main...feature"
           disabled={isReviewing}
           className="w-full rounded-md border border-border bg-surface-alt px-4 py-3 text-sm font-mono text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50"
         />
@@ -143,11 +151,35 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
           </p>
         )}
 
+        {commitParsed !== null && (
+          <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+            ✓ Commit 감지: {commitParsed.owner}/{commitParsed.repo}@{commitParsed.sha.slice(0, 7)}
+          </p>
+        )}
+
+        {compareParsed !== null && (
+          <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+            ✓ Compare 감지: {compareParsed.owner}/{compareParsed.repo} {compareParsed.base}...{compareParsed.head}
+          </p>
+        )}
+
         {repoParsed !== null && (
           <p className="mt-2 text-xs text-brand-600 dark:text-brand-100">
             📦 Repo 감지: {repoParsed.owner}/{repoParsed.repo}
             {loadingPRs ? ' — 최근 PR 가져오는 중…' : ' — 아래에서 PR 선택'}
           </p>
+        )}
+
+        {!trimmed && (
+          <div className="mt-3 p-3 rounded-md bg-surface-alt text-xs text-text-secondary">
+            <p className="font-semibold mb-1">💡 입력 가능한 URL 형식:</p>
+            <ul className="space-y-1 ml-3">
+              <li>• <code className="font-mono">github.com/owner/repo/pull/123</code> — 단일 PR</li>
+              <li>• <code className="font-mono">github.com/owner/repo/commit/abc123</code> — 단일 커밋</li>
+              <li>• <code className="font-mono">github.com/owner/repo/compare/main...feature</code> — 브랜치 비교</li>
+              <li>• <code className="font-mono">github.com/owner/repo</code> — 최근 PR 목록 보기</li>
+            </ul>
+          </div>
         )}
 
         {error !== null && (
@@ -156,11 +188,11 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
           </p>
         )}
 
-        {prParsed !== null && (
+        {isAnalyzable && (
           <button
             type="button"
             onClick={handleStart}
-            disabled={!isPrValid || isReviewing}
+            disabled={!isAnalyzable || isReviewing}
             className="mt-6 w-full rounded-md bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isReviewing ? '리뷰 진행 중... (3~5분)' : '리뷰 시작'}
