@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    FirstNode AI PR Review Toolkit 앱 아이콘 마스터 (1024x1024)
+    - 배경: brand-500(#3a64f0) → violet-600(#7c3aed) 대각선 그라데이션
+    - 모서리: ~22% 반경 (Apple HIG / Windows 11 표준 둥근 사각형)
+    - 모티프: 흰색 "PR" 텍스트 + 하단 흰색 원형 체크 마크
+    이 파일을 sharp로 1024 PNG로 굽고, `npm run tauri icon`이 모든 OS용 자산으로 자동 변환한다.
+  -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3a64f0"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 배경 둥근 사각형 (코너 반경 225 ≈ 22%) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="225" ry="225" fill="url(#brandGrad)"/>
+
+  <!-- 중앙 "PR" 텍스트 (흰색, 굵게) -->
+  <text x="512" y="540"
+        font-family="Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"
+        font-size="420"
+        font-weight="900"
+        text-anchor="middle"
+        fill="white"
+        letter-spacing="-20">PR</text>
+
+  <!-- 하단 체크 마크 원 (코드 리뷰 OK 상징) -->
+  <g transform="translate(512, 760)">
+    <circle cx="0" cy="0" r="80" fill="white" opacity="0.95"/>
+    <path d="M -35 0 L -8 28 L 40 -22"
+          stroke="url(#brandGrad)"
+          stroke-width="18"
+          fill="none"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+  </g>
+</svg>
