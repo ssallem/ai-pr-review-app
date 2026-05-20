@@ -26,6 +26,7 @@ import Input from './components/Input';
 import Onboarding from './components/Onboarding';
 import Result from './components/Result';
 import Settings from './components/Settings';
+import { checkClaudeCode, reviewDiffWithClaudeCode } from './lib/claudeCode';
 import { loadPRFromGitHub, parsePRUrl } from './lib/githubClient';
 import { reviewDiff, type ReviewResult } from './lib/reviewer';
 import {
@@ -53,17 +54,25 @@ export default function App() {
   const [reviewMeta, setReviewMeta] = useState<ReviewMeta | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
 
-  // 첫 부팅: 다크모드 + API 키 확인.
+  // 첫 부팅: 다크모드 + 인증 모드 확인.
+  // - authMode='claude-code': Claude Code CLI 가용성 체크 → 가능 시 input, 아니면 onboarding
+  // - authMode='api': API 키 존재 시 input, 없으면 onboarding
   useEffect(() => {
     applyTheme(getSettings().theme); // <html>.dark 클래스 동기화.
     setIsDark(getEffectiveTheme() === 'dark');
 
     void (async () => {
       try {
-        const key = await getApiKey();
-        setScreen(key !== null && key !== '' ? 'input' : 'onboarding');
+        const settings = getSettings();
+        if (settings.authMode === 'claude-code') {
+          const cc = await checkClaudeCode();
+          setScreen(cc.available ? 'input' : 'onboarding');
+        } else {
+          const key = await getApiKey();
+          setScreen(key !== null && key !== '' ? 'input' : 'onboarding');
+        }
       } catch {
-        // keychain 접근 실패 → 안전하게 onboarding 으로 fallback.
+        // 접근 실패 → 안전하게 onboarding 으로 fallback.
         setScreen('onboarding');
       }
     })();
@@ -85,17 +94,25 @@ export default function App() {
     setReviewError(null);
 
     try {
-      const apiKey = await getApiKey();
-      if (apiKey === null || apiKey === '') {
-        setReviewError('API 키가 없습니다. 설정에서 등록해주세요.');
-        setScreen('input');
-        return;
-      }
+      const settings = getSettings();
 
       // GitHub 토큰은 선택. 없으면 비인증 호출(rate limit 60/h).
       const githubToken = await getGithubToken();
       const diff = await loadPRFromGitHub(parsed, githubToken ?? undefined);
-      const result = await reviewDiff(diff, apiKey, { model: getSettings().model });
+
+      let result: ReviewResult;
+      if (settings.authMode === 'claude-code') {
+        // Max 모드 — subprocess 호출, API 키 불필요.
+        result = await reviewDiffWithClaudeCode(diff);
+      } else {
+        const apiKey = await getApiKey();
+        if (apiKey === null || apiKey === '') {
+          setReviewError('API 키가 없습니다. 설정에서 등록해주세요.');
+          setScreen('input');
+          return;
+        }
+        result = await reviewDiff(diff, apiKey, { model: settings.model });
+      }
 
       const prTitle = diff.meta.title || `${parsed.owner}/${parsed.repo}#${parsed.number}`;
       setReviewResult(result);
@@ -132,10 +149,13 @@ export default function App() {
 
   /**
    * Settings 에서 API 키 변경/삭제 시 호출.
-   * 키가 사라졌으면 onboarding 으로 복귀, 그 외엔 input 으로.
+   * authMode='api' 인데 키가 사라졌으면 onboarding 으로 복귀.
+   * authMode='claude-code' 면 API 키 유무와 무관 — 그대로 유지.
    */
   const handleApiKeyChanged = (): void => {
     void (async () => {
+      const settings = getSettings();
+      if (settings.authMode !== 'api') return;
       try {
         const key = await getApiKey();
         if (key === null || key === '') {

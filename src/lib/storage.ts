@@ -83,6 +83,8 @@ export async function deleteGithubToken(): Promise<void> {
 // 2) 일반 설정 — localStorage
 // ─────────────────────────────────────────
 
+export type AuthMode = 'api' | 'claude-code';
+
 export interface AppSettings {
   /** 사용 모델 ID — reviewer.ts DEFAULT_MODEL 과 동기화. */
   model: string;
@@ -90,6 +92,13 @@ export interface AppSettings {
   theme: 'light' | 'dark' | 'system';
   /** UI 언어. 현재 ko 기본, 향후 i18n 확장. */
   language: 'ko' | 'en';
+  /**
+   * 인증 방식.
+   *   - 'claude-code': Claude Code CLI subprocess (Max 구독, 비용 ₩0).
+   *   - 'api': Anthropic API 키 직접 호출 (종량제).
+   * 기본은 Max 사용자 친화로 'claude-code'.
+   */
+  authMode: AuthMode;
 }
 
 const SETTINGS_KEY = 'app_settings';
@@ -98,6 +107,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   model: 'claude-sonnet-4-6',
   theme: 'system',
   language: 'ko',
+  authMode: 'claude-code',
 };
 
 /**
@@ -129,10 +139,12 @@ export function saveSettings(settings: Partial<AppSettings>): void {
 function sanitizeSettings(input: Partial<AppSettings>): AppSettings {
   const theme = input.theme;
   const language = input.language;
+  const authMode = input.authMode;
   return {
     model: typeof input.model === 'string' && input.model ? input.model : DEFAULT_SETTINGS.model,
     theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : DEFAULT_SETTINGS.theme,
     language: language === 'ko' || language === 'en' ? language : DEFAULT_SETTINGS.language,
+    authMode: authMode === 'api' || authMode === 'claude-code' ? authMode : DEFAULT_SETTINGS.authMode,
   };
 }
 

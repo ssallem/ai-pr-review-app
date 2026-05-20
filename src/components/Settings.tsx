@@ -15,6 +15,7 @@
  */
 import { useCallback, useState, type FC } from 'react';
 
+import { checkClaudeCode } from '../lib/claudeCode';
 import {
   applyTheme,
   deleteApiKey,
@@ -26,7 +27,9 @@ import {
   setApiKey,
   setGithubToken,
   type AppSettings,
+  type AuthMode,
 } from '../lib/storage';
+import GithubAuthSection from './settings/GithubAuthSection';
 import ModelSelect from './settings/ModelSelect';
 import SecretField from './settings/SecretField';
 import SectionCard from './settings/SectionCard';
@@ -83,6 +86,27 @@ const Settings: FC<Props> = ({ onClose, onApiKeyChanged }) => {
     setSettings({ ...settings, theme });
   };
 
+  const handleAuthModeChange = async (mode: AuthMode): Promise<void> => {
+    if (mode === settings.authMode) return;
+    if (mode === 'claude-code') {
+      // 전환 전 가용성 확인.
+      const result = await checkClaudeCode();
+      if (!result.available) {
+        setMessage(
+          `Claude Code 를 찾지 못해 모드를 바꾸지 않았어요. 설치 후 다시 시도해주세요. (${result.error ?? ''})`,
+        );
+        return;
+      }
+    }
+    saveSettings({ authMode: mode });
+    setSettings({ ...settings, authMode: mode });
+    setMessage(
+      mode === 'claude-code'
+        ? 'Claude Code Max 모드로 전환했어요. (비용 ₩0)'
+        : 'Anthropic API 키 모드로 전환했어요.',
+    );
+  };
+
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <header className="flex items-center justify-between mb-8">
@@ -106,6 +130,46 @@ const Settings: FC<Props> = ({ onClose, onApiKeyChanged }) => {
       )}
 
       <SectionCard
+        title="인증 방식"
+        description={
+          settings.authMode === 'claude-code'
+            ? '현재: Claude Code Max (CLI subprocess, 비용 ₩0)'
+            : '현재: Anthropic API 키 (종량제)'
+        }
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => void handleAuthModeChange('claude-code')}
+            aria-pressed={settings.authMode === 'claude-code'}
+            className={
+              'p-3 rounded-md border-2 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ' +
+              (settings.authMode === 'claude-code'
+                ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-100 font-semibold'
+                : 'border-border bg-surface-alt hover:bg-surface text-text-primary')
+            }
+          >
+            <span className="block font-bold mb-0.5">💎 Claude Code Max</span>
+            <span className="block text-xs text-text-secondary">CLI subprocess · ₩0</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleAuthModeChange('api')}
+            aria-pressed={settings.authMode === 'api'}
+            className={
+              'p-3 rounded-md border-2 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 ' +
+              (settings.authMode === 'api'
+                ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/30 text-brand-800 dark:text-brand-100 font-semibold'
+                : 'border-border bg-surface-alt hover:bg-surface text-text-primary')
+            }
+          >
+            <span className="block font-bold mb-0.5">🔑 API 키</span>
+            <span className="block text-xs text-text-secondary">Anthropic SDK · 종량제</span>
+          </button>
+        </div>
+      </SectionCard>
+
+      <SectionCard
         title="Anthropic API 키"
         description={renderSecretDescription('OS keychain에 안전하게 저장됨', apiKey.masked, '미설정')}
       >
@@ -118,22 +182,30 @@ const Settings: FC<Props> = ({ onClose, onApiKeyChanged }) => {
         />
       </SectionCard>
 
-      <SectionCard
-        title="GitHub Personal Access Token (선택)"
-        description={renderSecretDescription(
-          '비공개 PR 접근 또는 rate limit 회피용',
-          githubToken.masked,
-          '미설정 (공개 PR만)',
-        )}
-      >
-        <SecretField
-          placeholder="ghp_..."
-          hasSaved={githubToken.hasSaved}
-          onSave={githubToken.save}
-          onDelete={githubToken.remove}
-          toggleLabel="토큰 보기 토글"
-        />
-      </SectionCard>
+      {/* 우선 노출: Device Flow OAuth. PAT 입력은 아래 "고급" 접힘 영역에 보관. */}
+      <GithubAuthSection />
+
+      <details className="mb-8 p-6 rounded-xl border border-border bg-surface">
+        <summary className="cursor-pointer text-sm font-semibold text-text-secondary hover:text-text-primary">
+          고급: GitHub Personal Access Token 수동 입력
+        </summary>
+        <div className="mt-4">
+          <p className="text-sm text-text-secondary mb-4">
+            {renderSecretDescription(
+              'OAuth 대신 PAT 를 직접 저장하고 싶을 때만 사용하세요',
+              githubToken.masked,
+              '미설정 (공개 PR만)',
+            )}
+          </p>
+          <SecretField
+            placeholder="ghp_..."
+            hasSaved={githubToken.hasSaved}
+            onSave={githubToken.save}
+            onDelete={githubToken.remove}
+            toggleLabel="토큰 보기 토글"
+          />
+        </div>
+      </details>
 
       <SectionCard title="Claude 모델">
         <ModelSelect value={settings.model} onChange={handleModelChange} />

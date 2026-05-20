@@ -1,8 +1,11 @@
 /**
- * 메인 입력 화면 — GitHub PR URL → 리뷰 시작.
+ * 메인 입력 화면 — GitHub PR URL 또는 repo URL → 리뷰 시작.
  *
  * 책임:
- *  - URL 입력 + 실시간 검증 (parsePRUrl).
+ *  - URL 입력 + 실시간 검증 (parsePRUrl 우선, 그 다음 parseRepoUrl).
+ *  - PR URL 감지 시 즉시 "리뷰 시작" 버튼 활성.
+ *  - Repo URL 감지 시 최근 PR 20건 자동 fetch + 카드 목록 표시.
+ *  - 카드 클릭 → 해당 PR URL 로 리뷰 시작.
  *  - "리뷰 시작" 버튼 / Enter → 부모 onStart 콜백 호출.
  *  - 최근 리뷰 5건 표시 (재실행 편의).
  *  - 로딩 상태 (isReviewing) / 에러 (error) 표시.
@@ -12,12 +15,19 @@
  *  - props.isReviewing 이 true→false 로 떨어질 때 최근 목록 다시 로드.
  *
  * 시스템 경계 검증:
- *  - URL 은 parsePRUrl 로 검증 후에만 전달 → owner/repo/number 타입 보장.
+ *  - URL 은 parsePRUrl / parseRepoUrl 로 검증 후에만 전달.
+ *  - listPRs 응답은 githubClient.ts 의 toPRSummary 에서 unknown 검증.
  */
-import { useEffect, useState, type FC } from 'react';
+import { useEffect, useRef, useState, type FC } from 'react';
 
-import { parsePRUrl } from '../lib/githubClient';
-import { getRecentReviews, type RecentReview } from '../lib/storage';
+import {
+  listPRs,
+  parsePRUrl,
+  parseRepoUrl,
+  type PRSummary,
+  type ParsedRepoUrl,
+} from '../lib/githubClient';
+import { getGithubToken, getRecentReviews, type RecentReview } from '../lib/storage';
 
 interface Props {
   /** 사용자가 "리뷰 시작" 누르면 호출. 부모가 실제 fetch + reviewDiff 실행. */
@@ -31,18 +41,69 @@ interface Props {
 const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
   const [url, setUrl] = useState('');
   const [recent, setRecent] = useState<RecentReview[]>([]);
+  const [prList, setPrList] = useState<PRSummary[] | null>(null);
+  const [loadingPRs, setLoadingPRs] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  // 동일 repo 에 대한 중복 fetch 방지 (useEffect debounce 보조).
+  const lastFetchedRepoRef = useRef<string | null>(null);
 
   // 리뷰 종료(false 로 떨어지는 시점) 마다 최근 목록 갱신.
   useEffect(() => {
     setRecent(getRecentReviews());
   }, [isReviewing]);
 
-  const parsed = url.trim() ? parsePRUrl(url.trim()) : null;
-  const isValid = parsed !== null;
+  const trimmed = url.trim();
+  const prParsed = trimmed ? parsePRUrl(trimmed) : null;
+  const repoParsed: ParsedRepoUrl | null = !prParsed && trimmed ? parseRepoUrl(trimmed) : null;
+  const isPrValid = prParsed !== null;
+
+  // Repo URL 감지 시 자동 fetch (debounce 350ms).
+  useEffect(() => {
+    if (repoParsed === null) {
+      lastFetchedRepoRef.current = null;
+      setPrList(null);
+      setListError(null);
+      return;
+    }
+
+    const key = `${repoParsed.owner}/${repoParsed.repo}`;
+    if (key === lastFetchedRepoRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      lastFetchedRepoRef.current = key;
+      void fetchPRs(repoParsed);
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+    // 의도적으로 repoParsed 객체 동일성보다 owner/repo 문자열에 의존.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoParsed?.owner, repoParsed?.repo]);
+
+  const fetchPRs = async (parsed: ParsedRepoUrl): Promise<void> => {
+    setLoadingPRs(true);
+    setListError(null);
+    try {
+      const token = await getGithubToken();
+      const prs = await listPRs(parsed.owner, parsed.repo, token ?? undefined, 'all', 20);
+      setPrList(prs);
+    } catch (e) {
+      setListError(e instanceof Error ? e.message : String(e));
+      setPrList(null);
+    } finally {
+      setLoadingPRs(false);
+    }
+  };
 
   const handleStart = (): void => {
-    if (!isValid || isReviewing) return;
-    onStart(url.trim());
+    if (!isPrValid || isReviewing) return;
+    onStart(trimmed);
+  };
+
+  const handlePRClick = (pr: PRSummary): void => {
+    if (isReviewing) return;
+    setUrl(pr.html_url);
+    setPrList(null);
+    onStart(pr.html_url);
   };
 
   const handleRecentClick = (prUrl: string): void => {
@@ -54,16 +115,16 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
       <header className="mb-8">
         <p className="text-xs font-bold uppercase tracking-widest text-brand-500 mb-2">PR 리뷰</p>
         <h2 className="text-3xl sm:text-4xl font-extrabold text-text-primary leading-tight">
-          GitHub PR 링크를 붙여넣으세요
+          GitHub PR 또는 repo 링크를 붙여넣으세요
         </h2>
         <p className="mt-3 text-text-secondary">
-          AI가 한국어로 코드 리뷰를 작성합니다. 약 3~5분 소요.
+          PR 링크면 즉시 리뷰. repo 링크면 최근 PR 목록을 보여줍니다. (약 3~5분 소요)
         </p>
       </header>
 
       <section className="rounded-2xl border border-border bg-surface p-6 sm:p-8 shadow-sm">
         <label htmlFor="pr-url" className="block text-xs font-bold uppercase tracking-widest text-text-secondary mb-2">
-          PR URL
+          URL
         </label>
         <input
           id="pr-url"
@@ -71,14 +132,21 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') handleStart(); }}
-          placeholder="https://github.com/owner/repo/pull/123"
+          placeholder="https://github.com/owner/repo/pull/123 또는 https://github.com/owner/repo"
           disabled={isReviewing}
           className="w-full rounded-md border border-border bg-surface-alt px-4 py-3 text-sm font-mono text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50"
         />
 
-        {parsed !== null && (
-          <p className="mt-2 text-xs text-text-secondary">
-            ✓ {parsed.owner}/{parsed.repo} #{parsed.number}
+        {prParsed !== null && (
+          <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+            ✓ PR 감지: {prParsed.owner}/{prParsed.repo} #{prParsed.number}
+          </p>
+        )}
+
+        {repoParsed !== null && (
+          <p className="mt-2 text-xs text-brand-600 dark:text-brand-100">
+            📦 Repo 감지: {repoParsed.owner}/{repoParsed.repo}
+            {loadingPRs ? ' — 최근 PR 가져오는 중…' : ' — 아래에서 PR 선택'}
           </p>
         )}
 
@@ -88,15 +156,63 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
           </p>
         )}
 
-        <button
-          type="button"
-          onClick={handleStart}
-          disabled={!isValid || isReviewing}
-          className="mt-6 w-full rounded-md bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {isReviewing ? '리뷰 진행 중... (3~5분)' : '리뷰 시작'}
-        </button>
+        {prParsed !== null && (
+          <button
+            type="button"
+            onClick={handleStart}
+            disabled={!isPrValid || isReviewing}
+            className="mt-6 w-full rounded-md bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isReviewing ? '리뷰 진행 중... (3~5분)' : '리뷰 시작'}
+          </button>
+        )}
       </section>
+
+      {/* PR 목록 — repo URL 자동 감지 후 표시. */}
+      {repoParsed !== null && prList !== null && prList.length > 0 && (
+        <section className="mt-6" aria-label="repo PR 목록">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-text-secondary mb-3">
+            {repoParsed.owner}/{repoParsed.repo} 최근 PR {prList.length}건
+          </h3>
+          <ul className="space-y-2">
+            {prList.map((pr) => (
+              <li key={pr.number}>
+                <button
+                  type="button"
+                  onClick={() => handlePRClick(pr)}
+                  disabled={isReviewing}
+                  className="w-full text-left p-4 rounded-lg border border-border bg-surface hover:bg-surface-alt hover:border-brand-500 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-start justify-between gap-3 mb-1">
+                    <span className="text-sm font-bold text-text-primary truncate">{pr.title}</span>
+                    <span className={getStateBadgeClass(pr)}>
+                      {pr.merged ? 'MERGED' : pr.state.toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="text-xs text-text-muted">
+                    #{pr.number} · {pr.author || '익명'} · +{pr.additions}/-{pr.deletions} · {pr.changed_files}파일
+                  </p>
+                  <p className="text-xs text-text-secondary mt-1 truncate">
+                    {pr.head_ref || '?'} → {pr.base_ref || '?'} · {formatDate(pr.updated_at)}
+                  </p>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {listError !== null && (
+        <p role="alert" className="mt-3 text-sm text-severity-critical">
+          PR 목록 가져오기 실패: {listError}
+        </p>
+      )}
+
+      {repoParsed !== null && prList !== null && prList.length === 0 && !loadingPRs && (
+        <p className="mt-6 text-sm text-text-muted">
+          이 repo에 PR이 없습니다. PR을 만든 후 다시 시도하세요.
+        </p>
+      )}
 
       {recent.length > 0 && (
         <section className="mt-8" aria-label="최근 리뷰 기록">
@@ -112,7 +228,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
                   <p className="text-sm font-medium text-text-primary truncate">{r.pr_title}</p>
                   <p className="text-xs text-text-muted mt-1 font-mono truncate">{r.pr_url}</p>
                   <p className="text-xs text-text-secondary mt-1">
-                    {new Date(r.date).toLocaleDateString('ko-KR')} · CRITICAL {r.critical} · WARNING {r.warning} · SUGGESTION {r.suggestion}
+                    {formatDate(r.date)} · CRITICAL {r.critical} · WARNING {r.warning} · SUGGESTION {r.suggestion}
                   </p>
                 </button>
               </li>
@@ -123,5 +239,25 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
     </div>
   );
 };
+
+/** PR 상태(open/closed/merged) 별 뱃지 색상 클래스. */
+function getStateBadgeClass(pr: PRSummary): string {
+  const base = 'shrink-0 text-xs font-bold px-2 py-0.5 rounded-full';
+  if (pr.merged) {
+    return `${base} bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-200`;
+  }
+  if (pr.state === 'open') {
+    return `${base} bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-200`;
+  }
+  return `${base} bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200`;
+}
+
+/** ISO date → ko-KR 표기. 빈 문자열이면 그대로. */
+function formatDate(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('ko-KR');
+}
 
 export default Input;

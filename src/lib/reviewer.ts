@@ -126,7 +126,11 @@ export async function reviewDiff(
 
 // ===== user message 조립 =====
 
-function buildUserMessage(diff: DiffPayload): string {
+/**
+ * DiffPayload 를 Claude 에 보낼 user message 문자열로 직렬화.
+ * claudeCode.ts(Max 모드)에서도 동일 포맷을 쓸 수 있도록 export.
+ */
+export function buildUserMessage(diff: DiffPayload): string {
   const lines: string[] = [];
 
   // PR 메타

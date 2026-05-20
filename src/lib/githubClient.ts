@@ -48,6 +48,31 @@ export interface ParsedPRUrl {
   number: number;
 }
 
+/** parseRepoUrl 결과 — PR 번호 없는 형태. */
+export interface ParsedRepoUrl {
+  owner: string;
+  repo: string;
+}
+
+/** listPRs 응답 요약 — Input.tsx 카드 표시에 충분한 최소 필드. */
+export interface PRSummary {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  merged: boolean;
+  draft: boolean;
+  author: string;
+  /** ISO 8601. */
+  created_at: string;
+  updated_at: string;
+  html_url: string;
+  base_ref: string;
+  head_ref: string;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+}
+
 // ===== 상수 =====
 
 /** Claude 컨텍스트 비용 보호용 임계값 — Python 봇과 동일. */
@@ -125,6 +150,50 @@ function stripGitSuffix(repo: string): string {
   return repo.endsWith('.git') ? repo.slice(0, -4) : repo;
 }
 
+// ===== Repo URL 파싱 (PR 없는 형태) =====
+
+// https://github.com/{owner}/{repo}[.git][/] [?query] [#frag]  — 추가 path segment 는 거부.
+const REPO_HTTPS_URL_RE = /^https?:\/\/github\.com\/([^/\s]+)\/([^/\s?#]+?)(?:\.git)?\/?(?:\?[^#]*)?(?:#.*)?$/i;
+// 단축형 'owner/repo' — 슬래시 하나, '#' 없음.
+const REPO_SHORT_RE = /^([^/\s#]+)\/([^/\s#]+?)(?:\.git)?$/;
+
+/**
+ * GitHub repo URL을 파싱한다. PR 번호가 포함되면 매칭 실패(null) — parsePRUrl 로 분기하도록 유도.
+ *
+ * 지원:
+ *   - https://github.com/owner/repo
+ *   - https://github.com/owner/repo.git
+ *   - https://github.com/owner/repo/  (trailing slash)
+ *   - owner/repo (단축형)
+ *
+ * 비대상: '/pull/123' / '/tree/...' 같은 추가 path 가 있는 URL.
+ */
+export function parseRepoUrl(input: string): ParsedRepoUrl | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  // PR URL이면 거른다 (호출자가 parsePRUrl 을 먼저 시도하는 것이 원칙이지만 방어).
+  if (parsePRUrl(trimmed) !== null) return null;
+
+  const long = trimmed.match(REPO_HTTPS_URL_RE);
+  if (long) {
+    return {
+      owner: long[1]!,
+      repo: stripGitSuffix(long[2]!),
+    };
+  }
+
+  const short = trimmed.match(REPO_SHORT_RE);
+  if (short) {
+    return {
+      owner: short[1]!,
+      repo: stripGitSuffix(short[2]!),
+    };
+  }
+
+  return null;
+}
+
 // ===== 언어 감지 =====
 
 /** Python `_detect_language` 와 동일 동작. */
@@ -187,6 +256,72 @@ interface RawPRMeta {
   user?: { login?: string };
   base?: { ref?: string };
   head?: { ref?: string };
+}
+
+/**
+ * Repo의 최근 PR 목록을 가져온다. updated 내림차순.
+ *
+ * @param owner - 'ssallem'
+ * @param repo - 'local-fx'
+ * @param token - 선택. private repo 또는 rate limit 회피 시 필요.
+ * @param state - 'open' | 'closed' | 'all' (기본 'all').
+ * @param perPage - 1~100 (기본 20).
+ * @returns PRSummary 배열 — html_url, additions, deletions 등 카드 표시용.
+ * @throws Error - 401/403/404 및 rate limit.
+ */
+export async function listPRs(
+  owner: string,
+  repo: string,
+  token?: string,
+  state: 'open' | 'closed' | 'all' = 'all',
+  perPage: number = 20,
+): Promise<PRSummary[]> {
+  const clamped = Math.max(1, Math.min(100, Math.floor(perPage)));
+  const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/pulls?state=${state}&per_page=${clamped}&sort=updated&direction=desc`;
+  const headers = {
+    ...buildHeaders(token),
+    Accept: 'application/vnd.github+json',
+  };
+
+  const res = await fetch(url, { headers });
+  await throwIfBad(res, 'PR 목록');
+  const raw: unknown = await res.json();
+  if (!Array.isArray(raw)) {
+    throw new Error('GitHub PR 목록 응답이 배열이 아닙니다.');
+  }
+
+  return raw.map(toPRSummary).filter((v): v is PRSummary => v !== null);
+}
+
+/** GitHub PR list element → PRSummary 변환. 필수 필드 누락 시 null. */
+function toPRSummary(item: unknown): PRSummary | null {
+  if (!item || typeof item !== 'object') return null;
+  const r = item as Record<string, unknown>;
+
+  if (typeof r.number !== 'number' || typeof r.title !== 'string') return null;
+
+  const state = r.state === 'closed' ? 'closed' : 'open';
+  const user = r.user as { login?: string } | undefined;
+  const head = r.head as { ref?: string } | undefined;
+  const base = r.base as { ref?: string } | undefined;
+
+  return {
+    number: r.number,
+    title: r.title,
+    state,
+    merged: typeof r.merged_at === 'string' && r.merged_at.length > 0,
+    draft: r.draft === true,
+    author: typeof user?.login === 'string' ? user.login : '',
+    created_at: typeof r.created_at === 'string' ? r.created_at : '',
+    updated_at: typeof r.updated_at === 'string' ? r.updated_at : '',
+    html_url: typeof r.html_url === 'string' ? r.html_url : '',
+    base_ref: typeof base?.ref === 'string' ? base.ref : '',
+    head_ref: typeof head?.ref === 'string' ? head.ref : '',
+    // GitHub list endpoint 는 additions/deletions/changed_files를 항상 보장하진 않는다 → 0 fallback.
+    additions: typeof r.additions === 'number' ? r.additions : 0,
+    deletions: typeof r.deletions === 'number' ? r.deletions : 0,
+    changed_files: typeof r.changed_files === 'number' ? r.changed_files : 0,
+  };
 }
 
 function buildHeaders(token: string | undefined): Record<string, string> {
