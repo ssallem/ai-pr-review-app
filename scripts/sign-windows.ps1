@@ -4,7 +4,7 @@
 
 param(
   [string]$Thumbprint = "F382A7A6DDFD342F44AE9E0010A328BD487CEDE5",
-  [string]$TimestampUrl = "http://timestamp.digicert.com",
+  [string]$TimestampUrl = "http://ts.ssl.com",
   [string]$BundlePath = "src-tauri/target/release/bundle"
 )
 
@@ -15,40 +15,16 @@ Write-Host "=== AI PR Review Toolkit — Windows 서명 시작 ===" -ForegroundC
 Write-Host "  Thumbprint: $Thumbprint" -ForegroundColor Gray
 Write-Host ""
 
-# 1. signtool 존재 확인 — PATH 검색 후, 실패 시 Windows SDK 일반 경로 시도
-$signtool = Get-Command signtool -ErrorAction SilentlyContinue
-if (-not $signtool) {
-  # Windows SDK 일반 경로 시도 (10.0.22621/22000 우선, 그 외 폴백)
-  $sdkPaths = @(
-    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe",
-    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.22000.0\x64\signtool.exe",
-    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.19041.0\x64\signtool.exe",
-    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe"
-  )
-  $signtoolPath = $null
-  foreach ($p in $sdkPaths) {
-    if (Test-Path $p) { $signtoolPath = $p; break }
-  }
-  if (-not $signtoolPath) {
-    # 동적 검색 — Windows Kits\10\bin 아래 가장 최신 버전 시도
-    $kitsRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
-    if (Test-Path $kitsRoot) {
-      $found = Get-ChildItem $kitsRoot -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending |
-        ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
-        Where-Object { Test-Path $_ } |
-        Select-Object -First 1
-      if ($found) { $signtoolPath = $found }
-    }
-  }
-  if (-not $signtoolPath) {
-    Write-Host "[ERROR] signtool.exe를 찾을 수 없습니다." -ForegroundColor Red
-    Write-Host "  Windows SDK 설치 또는 PATH 등록 필요" -ForegroundColor Yellow
-    Write-Host "  설치: https://developer.microsoft.com/windows/downloads/windows-sdk/" -ForegroundColor Gray
-    exit 1
-  }
+# 1. signtool 자동 탐색 — Windows Kits\10\bin\*\x64\signtool.exe 최신 버전 (local-fx 패턴)
+$signtoolExe = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending |
+    Select-Object -First 1
+if ($signtoolExe) {
+    $signtoolPath = $signtoolExe.FullName
+    Write-Host "    Found signtool: $signtoolPath" -ForegroundColor Gray
 } else {
-  $signtoolPath = $signtool.Source
+    $signtoolPath = "signtool"
+    Write-Host "    signtool not found in Windows SDK, using PATH fallback" -ForegroundColor Yellow
 }
 Write-Host "[INFO] signtool: $signtoolPath" -ForegroundColor Gray
 
