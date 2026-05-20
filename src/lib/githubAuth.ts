@@ -16,6 +16,10 @@
  * 시크릿(token)은 절대 console/localStorage 등에 평문으로 남기지 않는다.
  */
 
+// Tauri 2 plugin-http: GitHub login/oauth 엔드포인트는 CORS 헤더 미발급 → 글로벌 fetch 차단됨.
+// plugin-http 는 Rust 계층에서 대신 호출하므로 CORS 우회. capabilities/default.json 에 호스트 화이트리스트 필요.
+import { fetch } from '@tauri-apps/plugin-http';
+
 import { setGithubToken } from './storage';
 
 // FirstNode OAuth App "AI PR Review Toolkit" (ssallem 계정 소유)

@@ -25,4 +25,5 @@ serde_json = "1"
 # OS native keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 # v3 — Tauri 2 호환, 안정 API (Entry::new / set_password / get_password / delete_password).
 keyring = "3"
+tauri-plugin-http = "2.5.9"
 

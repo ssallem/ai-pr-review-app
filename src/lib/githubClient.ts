@@ -9,6 +9,10 @@
  * 시크릿(API token)은 함수 인자로만 받는다 — 전역 변수 금지.
  */
 
+// Tauri 2 plugin-http: api.github.com 도 WebView fetch 시 CORS / 일부 응답 헤더(특히 raw diff text)
+// 처리에 제약이 있어 안정성을 위해 plugin-http 사용. capabilities/default.json 에 호스트 화이트리스트 필요.
+import { fetch } from '@tauri-apps/plugin-http';
+
 // ===== 타입 =====
 
 /** 단일 파일의 변경. Python `FileDiff` 와 동등하되 `patch`+`truncated` 명시. */

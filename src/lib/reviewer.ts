@@ -10,6 +10,9 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+// Tauri 2 plugin-http: api.anthropic.com 자체는 CORS 허용이지만, 일관된 네트워크 경로를 위해
+// plugin-http 의 fetch 를 Anthropic SDK 의 fetch 옵션으로 주입한다. capabilities/default.json 에 호스트 허용.
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 import type { DiffPayload } from './githubClient';
 import { REVIEW_SYSTEM_PROMPT } from './prompts';
@@ -87,7 +90,12 @@ export async function reviewDiff(
 
   // 브라우저(Tauri WebView) 환경에서는 dangerouslyAllowBrowser 필요.
   // 실제 호출은 사용자 본인 키로만 일어나며, 키는 한 호출에 한해서만 사용된다.
-  const client = new Anthropic({ apiKey: anthropicApiKey, dangerouslyAllowBrowser: true });
+  // fetch 옵션 — plugin-http 로 통일해 CORS / 네트워크 정책 일관성 유지.
+  const client = new Anthropic({
+    apiKey: anthropicApiKey,
+    dangerouslyAllowBrowser: true,
+    fetch: tauriFetch,
+  });
 
   const userMessage = buildUserMessage(diff);
   const startedAt = Date.now();

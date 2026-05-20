@@ -168,6 +168,9 @@ fn build_invoke_command() -> Command {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Phase 2-C (2026-05-20): GitHub OAuth Device Flow / api.github.com / api.anthropic.com 호출은
+        // 브라우저(WebView) CORS 제약을 받는다. plugin-http 가 Rust 계층에서 대신 호출 → 우회.
+        .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             keychain_set,
