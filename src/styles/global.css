@@ -76,16 +76,36 @@
     @apply rounded bg-surface-alt px-1.5 py-0.5 text-sm font-mono text-brand-700 dark:text-brand-100;
   }
 
+  /* 다크 모드: inline code 배경을 명확히 분리해 가독성 강화 (surface-alt 보다 진한 슬레이트). */
+  .dark .markdown-body code {
+    @apply bg-slate-800;
+  }
+
   .markdown-body pre {
     @apply my-3 p-4 rounded-lg bg-surface-alt border border-border overflow-x-auto text-sm font-mono text-text-primary;
+  }
+
+  /* 다크 모드: 코드 블록을 더 깊은 배경 + 옅은 경계로 — 인접 본문과 시각 분리. */
+  .dark .markdown-body pre {
+    @apply bg-slate-900 border-slate-700;
   }
 
   .markdown-body pre code {
     @apply bg-transparent p-0 text-text-primary;
   }
 
+  /* 다크 모드 pre 안 code: pre 배경에 통일 — 두 번 어두워지지 않게. */
+  .dark .markdown-body pre code {
+    @apply bg-transparent text-slate-100;
+  }
+
   .markdown-body strong {
     @apply font-bold text-text-primary bg-amber-100/40 dark:bg-amber-900/30 px-1 rounded;
+  }
+
+  /* 다크 모드 strong: 글자색을 amber-100 으로 — bg-amber-900/30 위 흰색은 살짝 떠 보임. */
+  .dark .markdown-body strong {
+    @apply text-amber-100;
   }
 
   .markdown-body em {
@@ -106,8 +126,18 @@
     @apply text-brand-500 hover:underline;
   }
 
+  /* 다크 모드 링크: 본문이 어두운 배경에 brand-500 만으론 약함 — brand-100 으로 강조. */
+  .dark .markdown-body a {
+    @apply text-brand-100;
+  }
+
   .markdown-body blockquote {
     @apply my-3 pl-4 border-l-4 border-brand-100 italic text-text-secondary;
+  }
+
+  /* 다크 모드 blockquote: brand-100 left border는 어둠 속에서 너무 떠 보임 — brand-700 으로. */
+  .dark .markdown-body blockquote {
+    @apply border-brand-700;
   }
 
   .markdown-body h1,

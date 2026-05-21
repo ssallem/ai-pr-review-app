@@ -80,6 +80,12 @@ export async function callAnthropicMessages(
   if (!data.content || !Array.isArray(data.content)) {
     throw new Error('Anthropic 응답 형식 오류');
   }
+  // usage 누락 방어 — production 빌드에서 reviewer.extractUsage 가 0/0 으로 falsy fallback
+  // 되는 사고를 막기 위해 응답 객체에 usage 가 비어있으면 명시적 0 객체로 채워둔다.
+  // (정상 응답이면 input_tokens/output_tokens 가 항상 포함됨 — 이 가드는 안전망 용도.)
+  if (!data.usage || typeof data.usage !== 'object') {
+    data.usage = { input_tokens: 0, output_tokens: 0 };
+  }
   return data;
 }
 

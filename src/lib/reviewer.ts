@@ -184,12 +184,18 @@ function extractText(response: MessagesResponse): string {
 }
 
 function extractUsage(response: MessagesResponse): ReviewUsage {
-  const u = response.usage ?? { input_tokens: 0, output_tokens: 0 };
+  // Anthropic 응답 형태가 약간 다를 가능성 대비 — runtime 키 직접 조회.
+  // (SDK→fetch 마이그레이션 이후 0/0 표시 버그 재발 방지.)
+  const raw = (response as { usage?: unknown }).usage;
+  const u: Record<string, unknown> =
+    raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+
+  const asNum = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   return {
-    input_tokens: u.input_tokens ?? 0,
-    output_tokens: u.output_tokens ?? 0,
-    cache_creation_input_tokens: u.cache_creation_input_tokens,
-    cache_read_input_tokens: u.cache_read_input_tokens,
+    input_tokens: asNum(u.input_tokens),
+    output_tokens: asNum(u.output_tokens),
+    cache_creation_input_tokens: asNum(u.cache_creation_input_tokens),
+    cache_read_input_tokens: asNum(u.cache_read_input_tokens),
   };
 }
 

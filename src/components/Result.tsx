@@ -93,9 +93,27 @@ const Result: FC<Props> = ({ result, prTitle, prUrl, repoName, onNewReview }) =>
           </p>
         )}
 
-        <p className="mt-4 text-sm text-text-secondary">
-          🤖 {result.usage.input_tokens.toLocaleString()} 입력 / {result.usage.output_tokens.toLocaleString()} 출력 토큰
-        </p>
+        {(() => {
+          // prompt caching 사용 시 input_tokens 는 "캐시 미적중" 부분만 카운트되어
+          // 거의 0 이 될 수 있다. 실제 비용·소모와 일치시키려면 cache_read + cache_creation 을
+          // 합산해 표시해야 한다. (Anthropic Messages API 응답 형태 기준.)
+          const u = result.usage;
+          const cacheRead = u.cache_read_input_tokens ?? 0;
+          const cacheCreate = u.cache_creation_input_tokens ?? 0;
+          const totalInput = (u.input_tokens ?? 0) + cacheRead + cacheCreate;
+          const hasCache = cacheRead > 0 || cacheCreate > 0;
+          return (
+            <p className="mt-4 text-sm text-text-secondary">
+              🤖 {totalInput.toLocaleString()} 입력 /{' '}
+              {(u.output_tokens ?? 0).toLocaleString()} 출력 토큰
+              {hasCache && (
+                <span className="ml-2 text-text-muted">
+                  (캐시 적중 {cacheRead.toLocaleString()} · 캐시 생성 {cacheCreate.toLocaleString()})
+                </span>
+              )}
+            </p>
+          );
+        })()}
       </section>
 
       {/* 한 줄 요약 */}
