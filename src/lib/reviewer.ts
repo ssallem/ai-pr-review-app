@@ -9,10 +9,10 @@
  * 시크릿(anthropicApiKey)은 함수 인자로만 받는다. 전역 보관 금지.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-// Tauri 2 plugin-http: api.anthropic.com 자체는 CORS 허용이지만, 일관된 네트워크 경로를 위해
-// plugin-http 의 fetch 를 Anthropic SDK 의 fetch 옵션으로 주입한다. capabilities/default.json 에 호스트 허용.
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+// @anthropic-ai/sdk는 Node.js 전용 (fs/path/crypto/stream 등) → Vite production
+// 빌드에서 흰 화면 발생. SDK 제거 후 fetch로 Anthropic REST API 직접 호출.
+// CORS는 Tauri plugin-http이 Rust 계층에서 처리.
+import { callAnthropicMessages, type MessagesResponse } from './anthropicClient';
 
 import type { DiffPayload } from './githubClient';
 import { REVIEW_SYSTEM_PROMPT } from './prompts';
@@ -88,19 +88,12 @@ export async function reviewDiff(
     };
   }
 
-  // 브라우저(Tauri WebView) 환경에서는 dangerouslyAllowBrowser 필요.
-  // 실제 호출은 사용자 본인 키로만 일어나며, 키는 한 호출에 한해서만 사용된다.
-  // fetch 옵션 — plugin-http 로 통일해 CORS / 네트워크 정책 일관성 유지.
-  const client = new Anthropic({
-    apiKey: anthropicApiKey,
-    dangerouslyAllowBrowser: true,
-    fetch: tauriFetch,
-  });
-
   const userMessage = buildUserMessage(diff);
   const startedAt = Date.now();
 
-  const response = await client.messages.create({
+  // 사용자 본인 키로만 호출되고, 키는 한 호출에 한해서만 사용된다 (전역 보관 X).
+  // prompt caching: system을 배열 형태로 보내 cache_control: ephemeral 적용.
+  const response = await callAnthropicMessages(anthropicApiKey, {
     model,
     max_tokens: maxTokens,
     system: [
@@ -179,19 +172,8 @@ export function buildUserMessage(diff: DiffPayload): string {
 
 // ===== 응답 텍스트 / usage 추출 =====
 
-interface MaybeAnthropicResponse {
-  content?: Array<{ type?: string; text?: string }>;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-}
-
-function extractText(response: unknown): string {
-  const r = response as MaybeAnthropicResponse;
-  const content = r?.content ?? [];
+function extractText(response: MessagesResponse): string {
+  const content = response.content ?? [];
   const parts: string[] = [];
   for (const block of content) {
     if (block?.type === 'text' && typeof block.text === 'string') {
@@ -201,9 +183,8 @@ function extractText(response: unknown): string {
   return parts.join('');
 }
 
-function extractUsage(response: unknown): ReviewUsage {
-  const r = response as MaybeAnthropicResponse;
-  const u = r?.usage ?? {};
+function extractUsage(response: MessagesResponse): ReviewUsage {
+  const u = response.usage ?? { input_tokens: 0, output_tokens: 0 };
   return {
     input_tokens: u.input_tokens ?? 0,
     output_tokens: u.output_tokens ?? 0,
