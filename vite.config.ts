@@ -17,6 +17,10 @@ const SDK_NODE_ONLY_EXTERNALS = [
 export default defineConfig(async () => ({
   plugins: [react()],
 
+  // Tauri 2 production: tauri://localhost 컨텍스트에서 /assets/* 절대경로는
+  // 404 → 하얀 화면. 상대경로로 바꿔 자산 정상 로드.
+  base: "./",
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
