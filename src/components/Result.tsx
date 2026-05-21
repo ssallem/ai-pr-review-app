@@ -118,11 +118,11 @@ const Result: FC<Props> = ({ result, prTitle, prUrl, repoName, onNewReview }) =>
 
       {/* 한 줄 요약 */}
       {result.summary !== '' && (
-        <section className="my-8 rounded-xl border-l-4 border-brand-500 bg-brand-50 dark:bg-brand-900/20 p-5 sm:p-6">
+        <section className="my-8 rounded-xl border-l-4 border-brand-500 dark:border-brand-400 bg-brand-50 dark:bg-slate-800 p-5 sm:p-6">
           <p className="text-xs font-bold uppercase tracking-widest text-brand-700 dark:text-brand-100 mb-2">
             한 줄 요약
           </p>
-          <p className="text-base sm:text-lg text-text-primary leading-relaxed">{result.summary}</p>
+          <p className="text-base sm:text-lg leading-relaxed text-slate-900 dark:text-slate-100">{result.summary}</p>
         </section>
       )}
 
