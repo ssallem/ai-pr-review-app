@@ -28,7 +28,7 @@ GitHub PR을 **Claude**로 한국어 코드 리뷰 + 자동 수정 프롬프트 
 
 ## 📦 설치 방법
 
-1. 아래 **Assets**에서 `AI PR Review Toolkit_0.1.0_x64_en-US.msi` 다운로드
+1. 아래 **Assets**에서 `AI_PR_Review_Toolkit_0.1.0_x64_en-US.msi` 다운로드
 2. 더블클릭 → 설치 마법사 → 완료
 3. 시작 메뉴에서 **"AI PR Review Toolkit"** 실행
 4. 첫 실행 시:
