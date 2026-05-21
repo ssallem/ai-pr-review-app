@@ -16,6 +16,15 @@ import { invoke } from '@tauri-apps/api/core';
 /** keychain 서비스 이름 — tauri.conf.json identifier 와 동일하게 맞춘다. */
 const SERVICE = 'com.firstnode.ai-pr-review-app';
 
+/**
+ * Tauri 환경 가드 — 브라우저(`npm run preview`) 환경에서는 `__TAURI_INTERNALS__`
+ * 가 주입되지 않으므로 keychain 호출이 throw 한다. 호출 함수 진입에서 가드 후
+ * 안전한 기본값을 반환해 React tree 가 unmount 되는 흰 화면을 방지한다.
+ */
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
 // ─────────────────────────────────────────
 // 1) 시크릿 — OS keychain
 // ─────────────────────────────────────────
@@ -29,6 +38,10 @@ const KEY_GITHUB = 'github_token';
  * Windows: Credential Manager / macOS: Keychain Access / Linux: Secret Service.
  */
 export async function setApiKey(key: string): Promise<void> {
+  if (!isTauri()) {
+    console.warn('[storage] Tauri 환경 아님 — setApiKey 스킵');
+    return;
+  }
   await invoke<void>('keychain_set', {
     service: SERVICE,
     key: KEY_ANTHROPIC,
@@ -38,6 +51,10 @@ export async function setApiKey(key: string): Promise<void> {
 
 /** 저장된 Anthropic API 키 조회. 없으면 null. */
 export async function getApiKey(): Promise<string | null> {
+  if (!isTauri()) {
+    console.warn('[storage] Tauri 환경 아님 — getApiKey null 반환');
+    return null;
+  }
   return await invoke<string | null>('keychain_get', {
     service: SERVICE,
     key: KEY_ANTHROPIC,
@@ -46,6 +63,10 @@ export async function getApiKey(): Promise<string | null> {
 
 /** Anthropic API 키 삭제. 항목이 없어도 에러 없이 정상 종료. */
 export async function deleteApiKey(): Promise<void> {
+  if (!isTauri()) {
+    console.warn('[storage] Tauri 환경 아님 — deleteApiKey 스킵');
+    return;
+  }
   await invoke<void>('keychain_delete', {
     service: SERVICE,
     key: KEY_ANTHROPIC,
@@ -56,6 +77,10 @@ export async function deleteApiKey(): Promise<void> {
  * GitHub Personal Access Token (선택 — 비공개 PR / rate limit 회피).
  */
 export async function setGithubToken(token: string): Promise<void> {
+  if (!isTauri()) {
+    console.warn('[storage] Tauri 환경 아님 — setGithubToken 스킵');
+    return;
+  }
   await invoke<void>('keychain_set', {
     service: SERVICE,
     key: KEY_GITHUB,
@@ -65,6 +90,10 @@ export async function setGithubToken(token: string): Promise<void> {
 
 /** 저장된 GitHub 토큰 조회. 없으면 null. */
 export async function getGithubToken(): Promise<string | null> {
+  if (!isTauri()) {
+    console.warn('[storage] Tauri 환경 아님 — getGithubToken null 반환');
+    return null;
+  }
   return await invoke<string | null>('keychain_get', {
     service: SERVICE,
     key: KEY_GITHUB,
@@ -73,6 +102,10 @@ export async function getGithubToken(): Promise<string | null> {
 
 /** GitHub 토큰 삭제. 항목이 없어도 정상. */
 export async function deleteGithubToken(): Promise<void> {
+  if (!isTauri()) {
+    console.warn('[storage] Tauri 환경 아님 — deleteGithubToken 스킵');
+    return;
+  }
   await invoke<void>('keychain_delete', {
     service: SERVICE,
     key: KEY_GITHUB,

@@ -32,10 +32,21 @@ export interface ClaudeCodeAvailability {
 }
 
 /**
+ * Tauri 환경 가드 — 브라우저(`npm run preview`)에서는 invoke 가 throw 하므로
+ * 화면 fold 대신 명시적 `{ available: false }` 를 반환해 Onboarding 으로 안전 fallback.
+ */
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/**
  * Claude Code CLI 가 PATH 에 있고 동작 가능한지 확인.
  * Tauri Rust `claude_code_check` 호출 → `claude --version` 실행.
  */
 export async function checkClaudeCode(): Promise<ClaudeCodeAvailability> {
+  if (!isTauri()) {
+    return { available: false, error: 'Tauri 환경 아님 (브라우저 preview)' };
+  }
   try {
     const version = await invoke<string>('claude_code_check');
     return { available: true, version };
@@ -54,6 +65,9 @@ export async function checkClaudeCode(): Promise<ClaudeCodeAvailability> {
  * Max 모드는 토큰 사용량을 stdout 으로 노출하지 않으므로 usage 는 0/0 으로 기록.
  */
 export async function reviewDiffWithClaudeCode(diff: DiffPayload): Promise<ReviewResult> {
+  if (!isTauri()) {
+    throw new Error('Claude Code 리뷰는 Tauri 데스크탑 앱에서만 동작합니다 (브라우저 preview 불가).');
+  }
   // 빈 diff 가드 — reviewer.ts 와 동일 정책.
   if (diff.files.length === 0) {
     return {
