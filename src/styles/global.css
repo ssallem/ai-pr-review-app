@@ -4,13 +4,15 @@
 
 @layer base {
   :root {
-    /* Brand */
-    --color-brand-50:  #eef4ff;
-    --color-brand-100: #dbe6ff;
-    --color-brand-500: #3a64f0;
-    --color-brand-600: #2f54d8;
-    --color-brand-700: #2444b0;
-    --color-brand-900: #1a2f7a;
+    /* Brand — RGB 채널 형식. tailwind config가 rgb(var(...) / <alpha-value>)로
+       받으므로 bg-brand-900/60 같은 알파 표기가 정상 동작. (hex일 때 알파 무효 문제 해결.) */
+    --color-brand-50:  238 244 255;
+    --color-brand-100: 219 230 255;
+    --color-brand-200: 189 208 253;
+    --color-brand-500: 58 100 240;
+    --color-brand-600: 47 84 216;
+    --color-brand-700: 36 68 176;
+    --color-brand-900: 26 47 122;
 
     /* Surface */
     --color-surface:     #ffffff;
@@ -35,7 +37,7 @@
     --color-border:      #1f2937;
     --color-text-primary:   #f9fafb;
     --color-text-secondary: #d1d5db;
-    --color-text-muted:     #6b7280;
+    --color-text-muted:     #9ca3af;
   }
 
   html { font-family: theme('fontFamily.sans'); }
