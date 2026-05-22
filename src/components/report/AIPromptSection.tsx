@@ -39,13 +39,13 @@ const AIPromptSection: FC<Props> = ({ result, prTitle, repoName, prUrl }) => {
   };
 
   return (
-    <section className="my-8 rounded-2xl border-2 border-brand-500 dark:border-brand-700 bg-gradient-to-br from-brand-50 via-surface to-surface-alt dark:from-brand-900/20 dark:via-surface dark:to-surface-alt p-6 sm:p-8">
+    <section className="my-8 rounded-2xl border-2 border-brand-500 dark:border-brand-700 bg-gradient-to-br from-brand-50 via-surface to-surface-alt dark:from-brand-900/40 dark:via-surface dark:to-brand-950/20 p-6 sm:p-8">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
-          <p className="text-xs font-bold uppercase tracking-widest text-brand-700 dark:text-brand-100 mb-1">
+          <p className="text-xs font-bold uppercase tracking-widest text-brand-700 dark:text-white mb-1">
             AI 수정 요청 프롬프트
           </p>
-          <h2 className="text-xl font-bold text-text-primary">
+          <h2 className="text-xl font-bold text-text-primary dark:text-white">
             복사해서 Claude Code 또는 Codex 에 붙여넣으세요
           </h2>
         </div>
@@ -86,7 +86,7 @@ const AIPromptSection: FC<Props> = ({ result, prTitle, repoName, prUrl }) => {
         {prompt}
       </pre>
 
-      <p className="mt-3 text-xs text-text-secondary">
+      <p className="mt-3 text-xs text-text-secondary dark:text-gray-300">
         위 프롬프트를 복사 → 본인 PC 의 Claude Code 또는 Codex CLI 에 붙여넣기 → 자동 수정.
       </p>
     </section>

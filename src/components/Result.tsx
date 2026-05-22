@@ -77,7 +77,7 @@ const Result: FC<Props> = ({
         {(hasRepo || isCached) && (
           <div className="mb-3 flex items-center gap-2 flex-wrap">
             {hasRepo && (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-100 text-sm font-mono font-semibold">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-100 text-sm font-mono font-semibold">
                 <span aria-hidden="true">📦</span>
                 {repoName}
               </span>
