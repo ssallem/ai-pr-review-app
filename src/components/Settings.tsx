@@ -18,10 +18,14 @@ import { useCallback, useState, type FC } from 'react';
 import { checkClaudeCode } from '../lib/claudeCode';
 import {
   applyTheme,
+  clearRecentReviews,
+  clearReviewCache,
   deleteApiKey,
   deleteGithubToken,
   getApiKey,
+  getCachedReviewIds,
   getGithubToken,
+  getRecentReviews,
   getSettings,
   saveSettings,
   setApiKey,
@@ -45,6 +49,10 @@ interface Props {
 const Settings: FC<Props> = ({ onClose, onApiKeyChanged }) => {
   const [settings, setSettings] = useState<AppSettings>(getSettings());
   const [message, setMessage] = useState<string | null>(null);
+  // 리뷰 데이터 카운트 — Settings 화면 진입 시점 스냅샷.
+  // 카드 안에서만 변하므로 부모/외부 동기화 X. confirm → clear → setCount(0) 1방향.
+  const [recentCount, setRecentCount] = useState<number>(() => getRecentReviews().length);
+  const [cachedCount, setCachedCount] = useState<number>(() => getCachedReviewIds().length);
 
   const onSuccess = useCallback((m: string) => setMessage(m), []);
   const onError = useCallback((m: string) => setMessage(m), []);
@@ -84,6 +92,33 @@ const Settings: FC<Props> = ({ onClose, onApiKeyChanged }) => {
   const handleThemeChange = (theme: AppSettings['theme']): void => {
     applyTheme(theme);
     setSettings({ ...settings, theme });
+  };
+
+  const handleClearCacheOnly = (): void => {
+    if (cachedCount === 0) return;
+    if (
+      !window.confirm(
+        `캐시 본문 ${cachedCount}건을 지웁니다. 최근 리뷰 목록은 유지되지만 항목을 다시 열면 재분석이 필요합니다.`,
+      )
+    )
+      return;
+    clearReviewCache();
+    setCachedCount(0);
+    setMessage(`캐시 본문 ${cachedCount}건을 지웠어요. 목록은 유지됩니다.`);
+  };
+
+  const handleClearAllReviews = (): void => {
+    if (recentCount === 0) return;
+    if (
+      !window.confirm(
+        `최근 리뷰 ${recentCount}건과 캐시 본문을 모두 삭제합니다. 되돌릴 수 없어요.`,
+      )
+    )
+      return;
+    clearRecentReviews(); // 내부에서 clearReviewCache() 도 함께 호출.
+    setRecentCount(0);
+    setCachedCount(0);
+    setMessage('최근 리뷰와 캐시를 모두 삭제했어요.');
   };
 
   const handleAuthModeChange = async (mode: AuthMode): Promise<void> => {
@@ -209,6 +244,41 @@ const Settings: FC<Props> = ({ onClose, onApiKeyChanged }) => {
 
       <SectionCard title="Claude 모델">
         <ModelSelect value={settings.model} onChange={handleModelChange} />
+      </SectionCard>
+
+      <SectionCard
+        title="리뷰 데이터"
+        description="최근 리뷰 목록과 본문 캐시는 OS 자격 증명이 아닌 localStorage에 저장됩니다. 공유 PC라면 사용 후 정리를 권장합니다."
+      >
+        <div className="flex items-center gap-3 mb-4 text-sm text-text-muted">
+          <span>
+            최근 리뷰: <strong className="text-text-primary">{recentCount}건</strong>
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>
+            캐시 보유: <strong className="text-text-primary">{cachedCount}건</strong>
+          </span>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3">
+          {/* 캐시 본문만 — amber outline (medium destructive). */}
+          <button
+            type="button"
+            onClick={handleClearCacheOnly}
+            disabled={cachedCount === 0}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-100 text-sm font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-50 disabled:cursor-not-allowed transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
+          >
+            캐시 본문만 지우기
+          </button>
+          {/* 전체 삭제 — severity-critical (GitHub 연결 해제와 동일 패턴). */}
+          <button
+            type="button"
+            onClick={handleClearAllReviews}
+            disabled={recentCount === 0}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-severity-critical text-severity-critical text-sm font-semibold hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2"
+          >
+            최근 리뷰 전체 삭제
+          </button>
+        </div>
       </SectionCard>
 
       <SectionCard title="테마">
