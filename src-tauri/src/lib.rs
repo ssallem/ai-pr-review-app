@@ -11,8 +11,11 @@
 //
 // 시크릿 평문 저장 금지 — 모든 API 키/토큰은 본 모듈을 통해서만 접근.
 
+use std::env;
+use std::fs;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
+use std::process::Command;
 
 // 기존 데모 명령 — Phase 1-A 셋업 검증용. 사용자 코드에서 호출하지 않으면 제거 가능.
 #[tauri::command]
@@ -85,36 +88,55 @@ async fn claude_code_check() -> Result<String, String> {
     Ok(version)
 }
 
-/// Claude Code CLI 를 headless 로 호출 — `claude -p <prompt>` 에 diff 를 stdin 으로 전달.
+/// Claude Code CLI 를 headless 로 호출 — `claude -p <prompt>` 에 diff 를 전달.
 ///
 /// 시스템 경계 검증:
-///   - prompt/diff 는 모두 stdin 으로만 전달 → 쉘 인젝션 차단.
-///   - 인자에 사용자 입력 직접 보간 X.
+///   - prompt/diff 는 임시 파일에 쓴 뒤 쉘 redirect (`Get-Content` / `cat`) 로 stdin 에 흘림.
+///   - 인자에 사용자 입력 직접 보간 X (파일 경로만 single-quote escape 후 삽입).
+///
+/// Phase 2-W (2026-05-22): stdin 직접 write → 임시 파일 경유로 전환.
+///   - Claude CLI 가 piped stdin 10MB 제한을 강제 (대형 repo 리뷰 시 초과 → exit 1).
+///   - 파일 경로로 받으면 사실상 무제한 (CLI 내부 mmap/read).
 #[tauri::command]
 async fn claude_code_invoke(prompt: String, diff: String) -> Result<String, String> {
     let full_input = format!("{}\n\n{}", prompt, diff);
 
-    let mut child = build_invoke_command()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    // 임시 파일 경로 (pid + 밀리초 → 동일 프로세스 내 동시 호출 충돌 방지).
+    let temp_filename = format!(
+        "claude-input-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let temp_path: PathBuf = env::temp_dir().join(&temp_filename);
+
+    // UTF-8 로 쓰기 (BOM 없음). 한글/이모지 포함 안전.
+    {
+        let mut f = fs::File::create(&temp_path)
+            .map_err(|e| format!("임시 파일 생성 실패: {}", e))?;
+        f.write_all(full_input.as_bytes())
+            .map_err(|e| format!("임시 파일 쓰기 실패: {}", e))?;
+    }
+
+    // 결과 (성공/실패 모두 cleanup 보장하기 위해 closure 형태로 분리).
+    let result = run_claude_with_file(&temp_path);
+
+    // best-effort cleanup — 실패해도 OS temp 청소로 해결.
+    let _ = fs::remove_file(&temp_path);
+
+    result
+}
+
+/// 임시 파일을 stdin 으로 redirect 해 `claude -p` 호출. 에러 메시지에 경로 노출 X.
+fn run_claude_with_file(temp_path: &PathBuf) -> Result<String, String> {
+    let output = build_invoke_command(temp_path)
+        .output()
         .map_err(|e| format!(
             "Claude Code CLI 실행 실패: {}. Claude Code 가 설치되어 있나요? https://docs.claude.com/claude-code 설치 가이드 참고.",
             e
         ))?;
-
-    {
-        let stdin = child.stdin.as_mut().ok_or("stdin 핸들 획득 실패")?;
-        stdin
-            .write_all(full_input.as_bytes())
-            .map_err(|e| format!("stdin 쓰기 실패: {}", e))?;
-    }
-    // stdin drop → EOF 전달 (wait_with_output 내부에서 처리).
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("프로세스 대기 실패: {}", e))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -142,31 +164,39 @@ fn build_check_command() -> Command {
     c
 }
 
-/// 플랫폼별 `claude -p` 호출 Command 생성 (stdin 입력 대기 모드).
+/// 플랫폼별 `claude -p` 호출 Command 생성 (임시 파일을 stdin 으로 redirect).
 ///
 /// Phase 2-D (2026-05-22): `--output-format json` 추가.
 ///   - stdout 이 `{ "type": "result", "total_input_tokens": N, "total_output_tokens": M, "result": "..." }` JSON 으로 옴.
 ///   - claudeCode.ts 의 parseClaudeCodeOutput 가 파싱해서 usage 채움.
 ///   - 구버전 CLI (`--output-format` 미지원) 환경에서는 frontend 가 plain text 로 폴백.
+///
+/// Phase 2-W (2026-05-22): `$input` 직접 pipe → 임시 파일 redirect 로 전환.
+///   - Windows: `Get-Content -Raw -Encoding UTF8 -LiteralPath '<path>'` → claude.
+///     `$OutputEncoding` 을 UTF-8 로 강제해야 한글이 안 깨진다 (PS 5.1 default 는 ASCII).
+///   - macOS/Linux: `cat '<path>' | claude` — locale 의존 인코딩 문제 없음.
 #[cfg(target_os = "windows")]
-fn build_invoke_command() -> Command {
-    // powershell 의 `$input` 자동 변수로 stdin 을 claude 에 파이프.
-    // -p 는 headless print mode (Claude Code CLI).
-    // `--output-format json` 은 `--` prefix 라 powershell 이 별도 해석 없이 그대로 전달.
+fn build_invoke_command(temp_path: &PathBuf) -> Command {
+    // PowerShell single-quote literal 안전 삽입: `'` → `''` 로 이중화.
+    let escaped = temp_path.to_string_lossy().replace('\'', "''");
+    let ps_command = format!(
+        "$OutputEncoding = New-Object System.Text.UTF8Encoding $false; \
+         [Console]::OutputEncoding = $OutputEncoding; \
+         Get-Content -Raw -Encoding UTF8 -LiteralPath '{}' | claude -p --output-format json",
+        escaped
+    );
     let mut c = Command::new("powershell");
-    c.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "$input | claude -p --output-format json",
-    ]);
+    c.args(["-NoProfile", "-NonInteractive", "-Command", &ps_command]);
     c
 }
 
 #[cfg(not(target_os = "windows"))]
-fn build_invoke_command() -> Command {
-    let mut c = Command::new("claude");
-    c.args(["-p", "--output-format", "json"]);
+fn build_invoke_command(temp_path: &PathBuf) -> Command {
+    // sh single-quote literal escape: `'` → `'\''`.
+    let escaped = temp_path.to_string_lossy().replace('\'', "'\\''");
+    let sh_command = format!("cat '{}' | claude -p --output-format json", escaped);
+    let mut c = Command::new("sh");
+    c.args(["-c", &sh_command]);
     c
 }
 
