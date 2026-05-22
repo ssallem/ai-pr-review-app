@@ -19,7 +19,7 @@
  *  - URL 은 parsePRUrl / parseCommitUrl / parseCompareUrl / parseRepoUrl 로 검증 후에만 전달.
  *  - listPRs 응답은 githubClient.ts 의 toPRSummary 에서 unknown 검증.
  */
-import { useEffect, useRef, useState, type FC } from 'react';
+import { useEffect, useRef, useState, type FC, type MouseEvent } from 'react';
 
 import {
   listPRs,
@@ -32,7 +32,12 @@ import {
   type PRSummary,
   type ParsedRepoUrl,
 } from '../lib/githubClient';
-import { getGithubToken, getRecentReviews, type RecentReview } from '../lib/storage';
+import {
+  getCachedReviewIds,
+  getGithubToken,
+  getRecentReviews,
+  type RecentReview,
+} from '../lib/storage';
 
 interface Props {
   /** 사용자가 "리뷰 시작" 누르면 호출. 부모가 실제 fetch + reviewDiff 실행. */
@@ -46,11 +51,19 @@ interface Props {
    * "Settings 열기 →" CTA 에서 호출.
    */
   onOpenSettings: () => void;
+  /**
+   * "최근 리뷰" 항목 클릭 시 호출. App.tsx 가 캐시 hit/miss 분기:
+   *  - hit: Result 화면 직진입 (Claude 재호출 없음)
+   *  - miss: 자동으로 handleStartReview 흐름
+   */
+  onRecentSelect: (id: string, prUrl: string) => void;
 }
 
-const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings }) => {
+const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecentSelect }) => {
   const [url, setUrl] = useState('');
   const [recent, setRecent] = useState<RecentReview[]>([]);
+  // 캐시 보유 id Set — "캐시됨" 배지 표시 + 즉시 진입 가능 여부 판정.
+  const [cachedIds, setCachedIds] = useState<Set<string>>(new Set());
   const [prList, setPrList] = useState<PRSummary[] | null>(null);
   const [loadingPRs, setLoadingPRs] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -60,9 +73,10 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings }) => {
   // 동일 repo 에 대한 중복 fetch 방지 (useEffect debounce 보조).
   const lastFetchedRepoRef = useRef<string | null>(null);
 
-  // 리뷰 종료(false 로 떨어지는 시점) 마다 최근 목록 갱신.
+  // 리뷰 종료(false 로 떨어지는 시점) 마다 최근 목록 + 캐시 id 갱신.
   useEffect(() => {
     setRecent(getRecentReviews());
+    setCachedIds(new Set(getCachedReviewIds()));
   }, [isReviewing]);
 
   const trimmed = url.trim();
@@ -170,8 +184,24 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings }) => {
     onStart(commit.html_url);
   };
 
-  const handleRecentClick = (prUrl: string): void => {
+  /**
+   * "최근 리뷰" 항목 클릭. 캐시 hit/miss 분기는 App.tsx 의 onRecentSelect 가 처리.
+   * 여기선 단순히 id + URL 만 전달.
+   */
+  const handleRecentClick = (id: string, prUrl: string): void => {
+    if (isReviewing) return;
+    onRecentSelect(id, prUrl);
+  };
+
+  /**
+   * "↻ 다시 분석" 버튼. 캐시를 무시하고 새로 Claude 호출.
+   * 카드 클릭 이벤트로 버블링되지 않도록 stopPropagation.
+   */
+  const handleReanalyze = (e: MouseEvent<HTMLButtonElement>, prUrl: string): void => {
+    e.stopPropagation();
+    if (isReviewing) return;
     setUrl(prUrl);
+    onStart(prUrl);
   };
 
   return (
@@ -351,24 +381,56 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings }) => {
 
       {recent.length > 0 && (
         <section className="mt-8" aria-label="최근 리뷰 기록">
-          <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted mb-3">최근 리뷰</h3>
+          <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted mb-3">
+            최근 리뷰 <span className="font-normal normal-case tracking-normal text-text-muted">(최근 {recent.length}건)</span>
+          </h3>
           <ul className="space-y-2">
-            {recent.map((r) => (
-              <li key={r.id}>
-                <button
-                  type="button"
-                  onClick={() => handleRecentClick(r.pr_url)}
-                  className="w-full text-left p-3 rounded-md border border-border bg-surface hover:bg-surface-alt transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                >
-                  <p className="text-sm font-medium text-text-primary truncate">{r.pr_title}</p>
-                  <p className="text-xs text-text-muted mt-1 font-mono truncate">{r.pr_url}</p>
-                  <p className="text-xs text-text-secondary mt-1">
-                    {formatDate(r.date)} · CRITICAL {r.critical} · WARNING {r.warning} · SUGGESTION {r.suggestion}
-                  </p>
-                </button>
-              </li>
-            ))}
+            {recent.map((r) => {
+              const hasCache = cachedIds.has(r.id);
+              return (
+                <li key={r.id}>
+                  <div className="group relative w-full rounded-md border border-border bg-surface hover:bg-surface-alt transition focus-within:ring-2 focus-within:ring-brand-500">
+                    <button
+                      type="button"
+                      onClick={() => handleRecentClick(r.id, r.pr_url)}
+                      disabled={isReviewing}
+                      className="w-full text-left p-3 pr-28 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                      aria-label={hasCache ? `${r.pr_title} (캐시됨 · 즉시 보기)` : `${r.pr_title} (다시 분석)`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <p className="text-sm font-medium text-text-primary truncate">{r.pr_title}</p>
+                        {hasCache && (
+                          <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-100">
+                            ✓ 캐시됨
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-text-muted mt-1 font-mono truncate">{r.pr_url}</p>
+                      <p className="text-xs text-text-secondary mt-1">
+                        {formatDate(r.date)} · CRITICAL {r.critical} · WARNING {r.warning} · SUGGESTION {r.suggestion}
+                      </p>
+                    </button>
+                    {hasCache && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleReanalyze(e, r.pr_url)}
+                        disabled={isReviewing}
+                        title="캐시를 무시하고 Claude를 다시 호출합니다 (3~5분)"
+                        className="absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-text-secondary hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 dark:hover:text-brand-100 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        ↻ 다시 분석
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
+          <p className="mt-2 text-xs text-text-muted">
+            ✓ 캐시됨 = 로컬 PC 에 저장된 결과로 즉시 표시 (Claude 재호출 없음). 새 분석은 ↻ 버튼.
+            <br />
+            공유 PC 라면 결과가 다음 사용자에게 노출될 수 있으니 사용 후 Settings 에서 캐시 지우기를 사용하세요.
+          </p>
         </section>
       )}
     </div>

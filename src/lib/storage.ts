@@ -5,13 +5,17 @@
  *   1) 시크릿 (API 키 / GitHub 토큰): OS keychain (Tauri Rust command `keychain_*`).
  *      Windows Credential Manager / macOS Keychain Access / Linux Secret Service.
  *   2) 일반 설정 (model / theme / language): localStorage (평문이어도 무해한 값).
- *   3) 최근 사용 기록 (최대 5건): localStorage (요약 정보만, 본문 X).
+ *   3) 최근 사용 기록 (최대 10건) + 리뷰 결과 본문 캐시: localStorage
+ *      - recent_reviews 키: 메타데이터 목록 (pr_url, pr_title, date, severity 카운트 등)
+ *      - review_cache 키: { [id]: ReviewResult } 본문 캐시 (LRU prune).
  *
  * 시크릿은 절대 localStorage / sessionStorage / 평문 파일에 두지 않는다.
  * 모든 함수는 작은 단일 책임으로 유지 (50줄 미만).
  */
 
 import { invoke } from '@tauri-apps/api/core';
+
+import type { ReviewResult } from './reviewer';
 
 /** keychain 서비스 이름 — tauri.conf.json identifier 와 동일하게 맞춘다. */
 const SERVICE = 'com.firstnode.ai-pr-review-app';
@@ -240,7 +244,13 @@ export interface RecentReview {
 }
 
 const RECENT_KEY = 'recent_reviews';
-const MAX_RECENT = 5;
+const MAX_RECENT = 10;
+/**
+ * 리뷰 결과 본문 캐시 키 — RecentReview.id → ReviewResult 매핑.
+ * 사용자가 최근 리뷰를 다시 클릭했을 때 Claude 재호출 없이 즉시 Result 화면을
+ * 띄우기 위해 v0.1.1에서 추가. 5MB localStorage 한도 안에서 평균 30KB × 10건 = 300KB 수준.
+ */
+const CACHE_KEY = 'review_cache';
 
 /** 저장된 최근 리뷰 목록. 파싱 실패 시 빈 배열. */
 export function getRecentReviews(): RecentReview[] {
@@ -258,17 +268,121 @@ export function getRecentReviews(): RecentReview[] {
 /**
  * 새 리뷰 1건을 추가. 같은 PR URL이 이미 있으면 제거 후 맨 앞에 삽입.
  * 최대 MAX_RECENT 건만 유지.
+ *
+ * LRU에서 빠진 id 의 본문 캐시(review_cache)도 함께 prune — 디스크 leak 방지.
  */
 export function addRecentReview(review: RecentReview): void {
   const current = getRecentReviews();
   const filtered = current.filter((r) => r.pr_url !== review.pr_url);
   const next = [review, ...filtered].slice(0, MAX_RECENT);
   localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  pruneReviewCache(next.map((r) => r.id));
 }
 
-/** 최근 기록 전체 삭제. */
+/** 최근 기록 전체 삭제. 본문 캐시도 함께 비운다(일관성). */
 export function clearRecentReviews(): void {
   localStorage.removeItem(RECENT_KEY);
+  clearReviewCache();
+}
+
+// ─────────────────────────────────────────
+// 3-b) 리뷰 결과 본문 캐시 — localStorage
+//      id(RecentReview.id) → ReviewResult 매핑. 사용자가 "최근 리뷰"를 클릭하면
+//      Claude 재호출 없이 바로 표시하기 위한 캐시. localStorage 가드 + try/catch
+//      모든 함수에 적용 (Tauri/브라우저 환경 차이 + 한도 초과 안전).
+// ─────────────────────────────────────────
+
+/** localStorage 가드 — Tauri/브라우저/SSR 환경 차이 흡수. */
+function hasLocalStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+/** 내부: 캐시 전체를 dictionary 형태로 읽어온다. 파싱 실패 시 빈 객체. */
+function readCache(): Record<string, ReviewResult> {
+  if (!hasLocalStorage()) return {};
+  try {
+    const raw = window.localStorage.getItem(CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, ReviewResult>;
+  } catch (e) {
+    console.error('readCache failed:', e);
+    return {};
+  }
+}
+
+/**
+ * 캐시된 ReviewResult 저장.
+ * 성공 시 true, localStorage 미가용 또는 quota 초과 시 false 반환.
+ * caller 는 false 반환 시 사용자에게 "캐시 저장 실패" 안내를 표시할 수 있음.
+ * localStorage 한도(5MB) 초과는 다음 prune 사이클에서 자연스럽게 정리됨.
+ */
+export function saveReviewCache(id: string, result: ReviewResult): boolean {
+  if (!hasLocalStorage()) return false;
+  try {
+    const cache = readCache();
+    cache[id] = result;
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    return true;
+  } catch (e) {
+    console.error('saveReviewCache failed:', e);
+    return false;
+  }
+}
+
+/** 캐시된 ReviewResult 조회. 없으면 null. */
+export function getReviewCache(id: string): ReviewResult | null {
+  if (!hasLocalStorage()) return null;
+  try {
+    const cache = readCache();
+    return cache[id] ?? null;
+  } catch (e) {
+    console.error('getReviewCache failed:', e);
+    return null;
+  }
+}
+
+/**
+ * 주어진 id 목록에 없는 캐시 항목을 제거 — LRU에서 빠진 항목 정리용.
+ * addRecentReview 내부에서 자동 호출되므로 외부 호출자는 잘 쓰지 않는다.
+ */
+export function pruneReviewCache(keepIds: string[]): void {
+  if (!hasLocalStorage()) return;
+  try {
+    const cache = readCache();
+    const keep = new Set(keepIds);
+    const next: Record<string, ReviewResult> = {};
+    for (const [k, v] of Object.entries(cache)) {
+      if (keep.has(k)) next[k] = v;
+    }
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(next));
+  } catch (e) {
+    console.error('pruneReviewCache failed:', e);
+  }
+}
+
+/** 전체 캐시 비우기. clearRecentReviews 가 같이 호출. */
+export function clearReviewCache(): void {
+  if (!hasLocalStorage()) return;
+  try {
+    window.localStorage.removeItem(CACHE_KEY);
+  } catch (e) {
+    console.error('clearReviewCache failed:', e);
+  }
+}
+
+/**
+ * 캐시에 저장된 모든 review id 목록. Input.tsx 가 "캐시됨" 배지 표시 여부 판정.
+ * O(n) JSON.parse 1회 — 10건 한도라 무시 가능한 비용.
+ */
+export function getCachedReviewIds(): string[] {
+  if (!hasLocalStorage()) return [];
+  try {
+    return Object.keys(readCache());
+  } catch {
+    return [];
+  }
 }
 
 /** 외부에서 읽은 값이 RecentReview 형태인지 런타임 검증. */

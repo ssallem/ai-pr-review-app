@@ -50,7 +50,10 @@ import {
   getApiKey,
   getEffectiveTheme,
   getGithubToken,
+  getRecentReviews,
+  getReviewCache,
   getSettings,
+  saveReviewCache,
 } from './lib/storage';
 import './styles/global.css';
 
@@ -218,8 +221,11 @@ export default function App() {
       });
 
       setReviewResult(result);
+      // id 를 별도 변수로 뽑아 본문 캐시(saveReviewCache)에도 같은 키로 저장.
+      // 사용자가 나중에 "최근 리뷰" 항목을 클릭하면 Claude 재호출 없이 즉시 결과 화면.
+      const recentId = crypto.randomUUID();
       addRecentReview({
-        id: crypto.randomUUID(),
+        id: recentId,
         pr_url: inputUrl,
         pr_title: reviewTitle,
         date: new Date().toISOString(),
@@ -228,6 +234,15 @@ export default function App() {
         suggestion: result.issues.filter((i) => i.severity === 'SUGGESTION').length,
         duration_sec: Math.round(result.duration_ms / 1000),
       });
+      const cacheSaved = saveReviewCache(recentId, result);
+      if (!cacheSaved) {
+        // 캐시 저장 실패 (localStorage 미가용 또는 5MB quota 초과) — 분석 결과는
+        // 정상 표시되지만 "최근 리뷰" 목록에서 ✓ 캐시됨 배지가 뜨지 않고 재클릭 시
+        // Claude 재호출이 발생한다. toast UI 가 없어 일단 콘솔 경고로 처리.
+        console.warn(
+          'Review cache save failed (likely localStorage quota). Item will not appear cached in recent list.',
+        );
+      }
       setScreen('result');
     } catch (e) {
       setReviewError(`리뷰 실패: ${e instanceof Error ? e.message : String(e)}`);
@@ -246,6 +261,37 @@ export default function App() {
     setReviewMeta(null);
     setReviewError(null);
     setScreen('input');
+  };
+
+  /**
+   * "최근 리뷰" 항목 클릭 시 호출.
+   *  - 캐시 hit: localStorage 의 ReviewResult 를 그대로 Result 화면에 띄움 (Claude 재호출 X).
+   *  - 캐시 miss: 기존 흐름과 동일하게 handleStartReview 로 다시 분석.
+   *
+   * repoName 은 PR/commit/compare URL 형식 모두에서 추출 — Result Hero 의 📦 배지에 필요.
+   */
+  const handleRecentSelect = (id: string, prUrl: string): void => {
+    const cached = getReviewCache(id);
+    if (cached === null) {
+      void handleStartReview(prUrl);
+      return;
+    }
+
+    const prParsed = parsePRUrl(prUrl);
+    const commitParsed = !prParsed ? parseCommitUrl(prUrl) : null;
+    const compareParsed = !prParsed && !commitParsed ? parseCompareUrl(prUrl) : null;
+    const owner =
+      prParsed?.owner ?? commitParsed?.owner ?? compareParsed?.owner ?? null;
+    const repo = prParsed?.repo ?? commitParsed?.repo ?? compareParsed?.repo ?? null;
+    const repoName = owner !== null && repo !== null ? `${owner}/${repo}` : undefined;
+
+    // 최근 목록에서 title 복구. 없으면 fallback URL.
+    const title = getRecentReviews().find((r) => r.id === id)?.pr_title ?? prUrl;
+
+    setReviewResult(cached);
+    setReviewMeta({ prTitle: title, prUrl, repoName });
+    setReviewError(null);
+    setScreen('result');
   };
 
   /**
@@ -289,6 +335,7 @@ export default function App() {
             isReviewing={false}
             error={reviewError}
             onOpenSettings={() => setScreen('settings')}
+            onRecentSelect={handleRecentSelect}
           />
         )}
         {screen === 'reviewing' && (
