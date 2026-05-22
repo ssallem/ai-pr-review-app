@@ -26,6 +26,7 @@
 import { useEffect, useState } from 'react';
 
 import About from './components/About';
+import AppFooter from './components/AppFooter';
 import AppHeader from './components/AppHeader';
 import Input from './components/Input';
 import Onboarding from './components/Onboarding';
@@ -274,14 +275,14 @@ export default function App() {
 
   // 공통 헤더 + 본문 라우팅.
   return (
-    <div className="min-h-screen bg-surface text-text-primary">
+    <div className="min-h-screen flex flex-col bg-surface text-text-primary">
       <AppHeader
         onSettingsClick={() => setScreen('settings')}
         onAboutClick={() => setScreen('about')}
         isDark={isDark}
         onToggleDark={handleToggleDark}
       />
-      <main>
+      <main className="flex-1">
         {screen === 'input' && (
           <Input
             onStart={(url) => void handleStartReview(url)}
@@ -314,6 +315,7 @@ export default function App() {
         )}
         {screen === 'about' && <About onClose={() => setScreen('input')} />}
       </main>
+      <AppFooter />
     </div>
   );
 }

@@ -104,10 +104,6 @@ const About: FC<Props> = ({ onClose }) => {
           </li>
         </ul>
       </section>
-
-      <p className="text-center text-xs text-text-muted mt-8">
-        © 2026 FirstNode. ssallem@kakao.com
-      </p>
     </div>
   );
 };
