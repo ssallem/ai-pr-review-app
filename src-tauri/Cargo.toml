@@ -24,6 +24,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # OS native keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 # v3 — Tauri 2 호환, 안정 API (Entry::new / set_password / get_password / delete_password).
-keyring = "3"
+#
+# IMPORTANT: keyring 3.x ships with NO native backend by default — without features the
+# crate links only the `mock` (per-Entry in-memory) store, so set/get appear to succeed
+# but each Entry::new() creates a fresh isolated state → token disappears between calls.
+# 반드시 플랫폼별 native feature 를 명시적으로 활성화해야 한다.
+#   - windows-native       → Windows Credential Manager (wincred)
+#   - apple-native         → macOS Keychain Access
+#   - sync-secret-service  → Linux Secret Service (libsecret) — crypto-rust 필요
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tauri-plugin-http = "2.5.9"
 

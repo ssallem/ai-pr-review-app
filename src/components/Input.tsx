@@ -41,9 +41,14 @@ interface Props {
   isReviewing: boolean;
   /** 부모가 발생시킨 에러 메시지. */
   error: string | null;
+  /**
+   * Settings 화면으로 이동. 404/403 (private repo or 권한 부족) 에러 발생 시
+   * "Settings 열기 →" CTA 에서 호출.
+   */
+  onOpenSettings: () => void;
 }
 
-const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
+const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings }) => {
   const [url, setUrl] = useState('');
   const [recent, setRecent] = useState<RecentReview[]>([]);
   const [prList, setPrList] = useState<PRSummary[] | null>(null);
@@ -239,6 +244,10 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
           </p>
         )}
 
+        {needsAuthCta(error) && (
+          <AuthCta onOpenSettings={onOpenSettings} />
+        )}
+
         {isAnalyzable && (
           <button
             type="button"
@@ -289,6 +298,10 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
         <p role="alert" className="mt-3 text-sm text-severity-critical">
           PR 목록 가져오기 실패: {listError}
         </p>
+      )}
+
+      {needsAuthCta(listError) && (
+        <AuthCta onOpenSettings={onOpenSettings} />
       )}
 
       {/* PR 0건 fallback — 최근 commit 카드로 대체 (1인 개발자 워크플로우). */}
@@ -361,6 +374,32 @@ const Input: FC<Props> = ({ onStart, isReviewing, error }) => {
     </div>
   );
 };
+
+/**
+ * 에러 메시지가 GitHub 인증 부족(404 private repo / 403 권한)을 시사하는지 판정.
+ * githubClient.throwIfBad 의 메시지 패턴에 맞춘다.
+ */
+function needsAuthCta(msg: string | null): boolean {
+  if (msg === null) return false;
+  return /\b404\b|\b403\b|Forbidden|Invalid token|SAML SSO/.test(msg);
+}
+
+/** 인증 안내 인라인 CTA. Settings 화면으로 이동시킨다. */
+const AuthCta: FC<{ onOpenSettings: () => void }> = ({ onOpenSettings }) => (
+  <div className="mt-4 p-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-900 dark:text-amber-100">
+    <p className="font-semibold mb-2">private 저장소이거나 인증이 필요한 PR인가요?</p>
+    <p className="mb-3">
+      Settings 에서 GitHub 계정을 연결하면 private repo 에 접근할 수 있고, rate limit 도 회피됩니다.
+    </p>
+    <button
+      type="button"
+      onClick={onOpenSettings}
+      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
+    >
+      Settings 열기 →
+    </button>
+  </div>
+);
 
 /** PR 상태(open/closed/merged) 별 뱃지 색상 클래스. */
 function getStateBadgeClass(pr: PRSummary): string {

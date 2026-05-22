@@ -78,6 +78,17 @@ const GithubAuthSection: FC = () => {
         abort.signal,
       );
 
+      // pollForToken 내부에서 setGithubToken(read-back 검증 포함) 까지 완료됨.
+      // 그래도 화면 state 와 실제 keychain 영속 상태를 한 번 더 cross-check —
+      // 다음 화면(메인)에서 PR fetch 시 401/404 가 나오는 일을 막는다.
+      const verify = await getGithubToken();
+      if (verify === null || verify.length === 0) {
+        throw new Error(
+          'GitHub 인증은 성공했지만 토큰을 keychain 에 영속화하지 못했습니다. ' +
+            '앱 재시작 후 다시 시도하거나 GitHub Issue 에 신고 부탁드립니다.',
+        );
+      }
+
       // 성공.
       setHasToken(true);
       setFlow(null);
@@ -86,6 +97,13 @@ const GithubAuthSection: FC = () => {
       setError(e instanceof Error ? e.message : String(e));
       setPolling(false);
       setFlow(null);
+      // 실패 시 hasToken 도 동기화 — 부분적으로 set 됐을 수도 있으므로 다시 query.
+      try {
+        const t = await getGithubToken();
+        setHasToken(t !== null && t.length > 0);
+      } catch {
+        setHasToken(false);
+      }
     }
   };
 

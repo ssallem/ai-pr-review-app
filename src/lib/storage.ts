@@ -75,6 +75,11 @@ export async function deleteApiKey(): Promise<void> {
 
 /**
  * GitHub Personal Access Token (선택 — 비공개 PR / rate limit 회피).
+ *
+ * 저장 직후 read-back 으로 실제 영속화를 검증한다. keychain 백엔드가 잘못 설정되어
+ * mock 으로 fallback 되는 등 silent fail 케이스를 즉시 발견하기 위함.
+ * 검증 실패 시 명확한 한국어 에러로 throw 해 호출자(GithubAuthSection)가 사용자에게
+ * 표시할 수 있게 한다.
  */
 export async function setGithubToken(token: string): Promise<void> {
   if (!isTauri()) {
@@ -86,6 +91,20 @@ export async function setGithubToken(token: string): Promise<void> {
     key: KEY_GITHUB,
     value: token,
   });
+  // 영속화 검증 — 저장 직후 같은 키로 다시 읽어서 일치하는지 확인.
+  // keyring 백엔드가 mock 으로 fallback 되면 set 은 성공하지만 다음 Entry::new() 의
+  // get 은 NoEntry 가 되어 null 반환 → 여기서 잡힌다.
+  const readback = await invoke<string | null>('keychain_get', {
+    service: SERVICE,
+    key: KEY_GITHUB,
+  });
+  if (readback?.trim() !== token.trim()) {
+    throw new Error(
+      'GitHub 토큰을 OS keychain 에 저장하지 못했습니다. ' +
+        '(설정 후 read-back 검증 실패 — keyring backend 미설정 가능성). ' +
+        '관리자 권한으로 앱을 재시작해도 동일하면 GitHub Issue 에 신고 부탁드립니다.',
+    );
+  }
 }
 
 /** 저장된 GitHub 토큰 조회. 없으면 null. */
@@ -110,6 +129,26 @@ export async function deleteGithubToken(): Promise<void> {
     service: SERVICE,
     key: KEY_GITHUB,
   });
+}
+
+/**
+ * 진단용 — DevTools 콘솔에서 직접 호출해 keychain 상태 확인.
+ * `await window.__debugCheckGithubToken()` 형태로 노출하지는 않고, 임포트해서 사용.
+ * 토큰 자체는 보안상 prefix 8자만 노출한다.
+ */
+export async function debugCheckGithubToken(): Promise<{
+  tauri: boolean;
+  hasToken: boolean;
+  preview: string | null;
+}> {
+  const tauri = isTauri();
+  if (!tauri) return { tauri: false, hasToken: false, preview: null };
+  const t = await invoke<string | null>('keychain_get', {
+    service: SERVICE,
+    key: KEY_GITHUB,
+  });
+  if (t === null || t.length === 0) return { tauri: true, hasToken: false, preview: null };
+  return { tauri: true, hasToken: true, preview: `${t.slice(0, 8)}…(${t.length}자)` };
 }
 
 // ─────────────────────────────────────────

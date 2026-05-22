@@ -288,6 +288,7 @@ export default function App() {
             onStart={(url) => void handleStartReview(url)}
             isReviewing={false}
             error={reviewError}
+            onOpenSettings={() => setScreen('settings')}
           />
         )}
         {screen === 'reviewing' && (
