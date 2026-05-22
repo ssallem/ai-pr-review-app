@@ -14,8 +14,8 @@
 // CORS는 Tauri plugin-http이 Rust 계층에서 처리.
 import { callAnthropicMessages, type MessagesResponse } from './anthropicClient';
 
-import type { DiffPayload } from './githubClient';
-import { REVIEW_SYSTEM_PROMPT } from './prompts';
+import type { DiffPayload, FullSourcePayload } from './githubClient';
+import { FULL_SOURCE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT } from './prompts';
 
 // ===== 타입 =====
 
@@ -167,6 +167,131 @@ export function buildUserMessage(diff: DiffPayload): string {
 
   lines.push('');
   lines.push('위 변경 사항을 시스템 프롬프트의 5가지 관점으로 검토하고 JSON으로 답변하라.');
+  return lines.join('\n');
+}
+
+// ===== 전체 소스 리뷰 =====
+
+/**
+ * FullSourcePayload (repo 전체 코드) 를 Claude AI로 보내 코드 리뷰를 생성한다.
+ *
+ * reviewDiff 와 구조는 동일하지만:
+ *  - 시스템 프롬프트는 FULL_SOURCE_SYSTEM_PROMPT
+ *  - user message 빌더는 buildFullSourceUserMessage
+ *  - 빈 페이로드 가드 메시지가 "필터 결과 0건" 으로 다름
+ *
+ * @param payload - githubClient.loadFullSourceFromRepo 결과.
+ * @param anthropicApiKey - 사용자 본인 Anthropic API 키.
+ * @param options - 모델·토큰 오버라이드.
+ * @throws Error - 인증 실패, rate limit, 네트워크 등.
+ */
+export async function reviewFullSource(
+  payload: FullSourcePayload,
+  anthropicApiKey: string,
+  options: ReviewOptions = {},
+): Promise<ReviewResult> {
+  if (!anthropicApiKey) {
+    throw new Error('Anthropic API 키가 비어있습니다');
+  }
+
+  const model = options.model ?? DEFAULT_MODEL;
+  const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+
+  // 빈 페이로드 가드 — 필터 결과 0건일 때 API 호출 없이 반환.
+  if (payload.files.length === 0) {
+    return {
+      issues: [],
+      summary: '리뷰할 파일이 없습니다 (필터 결과 0건).',
+      warnings: ['파일 0건 — 필터 조건(경로/확장자)을 확인하세요'],
+      raw_response: '',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      duration_ms: 0,
+    };
+  }
+
+  const userMessage = buildFullSourceUserMessage(payload);
+  const startedAt = Date.now();
+
+  // prompt caching: system을 배열 형태로 보내 cache_control: ephemeral 적용.
+  const response = await callAnthropicMessages(anthropicApiKey, {
+    model,
+    max_tokens: maxTokens,
+    system: [
+      {
+        type: 'text',
+        text: FULL_SOURCE_SYSTEM_PROMPT,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [{ role: 'user', content: userMessage }],
+  });
+
+  const durationMs = Date.now() - startedAt;
+  const rawText = extractText(response);
+  const { issues, summary, warnings: parseWarnings } = parseReviewResponse(rawText);
+
+  const warnings = [...parseWarnings];
+  if (payload.truncated) {
+    warnings.push('입력 소스가 50K LOC 한계로 절단됨 — 일부 파일이 리뷰에서 누락됨');
+  }
+
+  return {
+    issues,
+    summary: summary || rawText,
+    warnings,
+    raw_response: rawText,
+    usage: extractUsage(response),
+    duration_ms: durationMs,
+  };
+}
+
+/**
+ * FullSourcePayload 를 Claude 에 보낼 user message 문자열로 직렬화.
+ * claudeCode.ts(Max 모드)에서도 동일 포맷을 쓸 수 있도록 export.
+ */
+export function buildFullSourceUserMessage(payload: FullSourcePayload): string {
+  const lines: string[] = [];
+
+  // 헤더
+  lines.push('# 전체 소스 리뷰 요청');
+  lines.push(
+    `- repo: ${payload.meta.owner}/${payload.meta.repo}` +
+      ` (branch: ${payload.meta.branch})`,
+  );
+  lines.push(
+    `- 파일 ${payload.files.length}개 · 약 ${payload.totalLoc.toLocaleString()} LOC ·` +
+      ` ${(payload.totalBytes / 1024).toFixed(1)} KB`,
+  );
+  lines.push('');
+
+  // 처리 메모 (자동 제외/절단 등)
+  if (payload.notes.length > 0) {
+    lines.push('# 처리 메모');
+    for (const note of payload.notes) lines.push(`- ${note}`);
+    lines.push('');
+  }
+
+  // 파일 목록 (인덱스용)
+  lines.push(`# 파일 목록 (${payload.files.length}개)`);
+  for (const f of payload.files) {
+    lines.push(`- ${f.path} (${f.language}, ${f.bytes} bytes)`);
+  }
+  lines.push('');
+
+  // 본문
+  lines.push('# 소스 코드');
+  for (const f of payload.files) {
+    lines.push('');
+    lines.push(`## ${f.path}`);
+    lines.push('```' + f.language);
+    lines.push(f.content);
+    lines.push('```');
+  }
+
+  lines.push('');
+  lines.push(
+    '위 전체 소스를 시스템 프롬프트의 5가지 관점으로 검토하고 JSON으로 답변하라.',
+  );
   return lines.join('\n');
 }
 

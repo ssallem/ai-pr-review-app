@@ -22,6 +22,7 @@
 import { useEffect, useRef, useState, type FC, type MouseEvent } from 'react';
 
 import {
+  estimateFullSourceSize,
   listPRs,
   listRecentCommits,
   parseCommitUrl,
@@ -29,8 +30,10 @@ import {
   parsePRUrl,
   parseRepoUrl,
   type CommitSummary,
+  type FullSourceOptions,
   type PRSummary,
   type ParsedRepoUrl,
+  type SizeEstimate,
 } from '../lib/githubClient';
 import {
   getCachedReviewIds,
@@ -57,9 +60,24 @@ interface Props {
    *  - miss: 자동으로 handleStartReview 흐름
    */
   onRecentSelect: (id: string, prUrl: string) => void;
+  /**
+   * "전체 소스 리뷰" 시작 — repo 전체 트리를 Claude 로 검토.
+   * Input.tsx 는 사이즈 추정만 책임, 실제 fetch + Claude 호출은 App.tsx 에서.
+   */
+  onStartFullSource: (
+    parsed: { owner: string; repo: string },
+    options: FullSourceOptions,
+  ) => void;
 }
 
-const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecentSelect }) => {
+const Input: FC<Props> = ({
+  onStart,
+  isReviewing,
+  error,
+  onOpenSettings,
+  onRecentSelect,
+  onStartFullSource,
+}) => {
   const [url, setUrl] = useState('');
   const [recent, setRecent] = useState<RecentReview[]>([]);
   // 캐시 보유 id Set — "캐시됨" 배지 표시 + 즉시 진입 가능 여부 판정.
@@ -72,6 +90,17 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
   const [loadingCommits, setLoadingCommits] = useState(false);
   // 동일 repo 에 대한 중복 fetch 방지 (useEffect debounce 보조).
   const lastFetchedRepoRef = useRef<string | null>(null);
+
+  // ===== "전체 소스 리뷰" UI 상태 (repo URL 감지 시에만 활성) =====
+  // 카드 클릭 → inline 패널 전개. 필터 입력 + 사이즈 추정 후 시작 버튼.
+  const [fullSourceMode, setFullSourceMode] = useState(false);
+  // 콤마 구분 입력 (예: "src/, lib/"). 빈 값 = 전체.
+  const [filterPaths, setFilterPaths] = useState('');
+  // 콤마 구분 입력 (예: ".ts, .tsx"). 빈 값 = 전체 텍스트 파일.
+  const [filterExts, setFilterExts] = useState('');
+  const [estimate, setEstimate] = useState<SizeEstimate | null>(null);
+  const [estimating, setEstimating] = useState(false);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
 
   // 리뷰 종료(false 로 떨어지는 시점) 마다 최근 목록 + 캐시 id 갱신.
   useEffect(() => {
@@ -96,6 +125,10 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
       setPrList(null);
       setCommitList(null);
       setListError(null);
+      // 전체 소스 리뷰 패널도 함께 닫음 — repo URL 사라지면 의미 없음.
+      setFullSourceMode(false);
+      setEstimate(null);
+      setEstimateError(null);
       return;
     }
 
@@ -106,6 +139,9 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
       lastFetchedRepoRef.current = key;
       // 새 repo → commit fallback 상태 초기화 (다음 effect 가 PR 0건 감지 시 재로드).
       setCommitList(null);
+      // 새 repo → 전체 소스 리뷰 추정값/오류 초기화. 패널 자체는 유지 (사용자 의도 존중).
+      setEstimate(null);
+      setEstimateError(null);
       void fetchPRs(repoParsed);
     }, 350);
 
@@ -204,6 +240,49 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
     onStart(prUrl);
   };
 
+  /**
+   * 콤마 구분 문자열 → trim 된 비어있지 않은 토큰 배열.
+   * 입력 정규화 — 시스템 경계 검증(룰 6) 차원에서 한 곳에서 처리.
+   */
+  const splitFilter = (raw: string): string[] =>
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+  /** "사이즈 계산" 버튼. backend 의 estimateFullSourceSize 호출. */
+  const handleEstimate = async (): Promise<void> => {
+    if (repoParsed === null) return;
+    setEstimating(true);
+    setEstimateError(null);
+    setEstimate(null);
+    try {
+      const token = await getGithubToken();
+      const options: FullSourceOptions = {
+        includePaths: splitFilter(filterPaths),
+        includeExts: splitFilter(filterExts),
+        excludeDefaults: true,
+      };
+      const result = await estimateFullSourceSize(repoParsed, token ?? undefined, options);
+      setEstimate(result);
+    } catch (e) {
+      setEstimateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEstimating(false);
+    }
+  };
+
+  /** "전체 소스 리뷰 시작" 버튼. App.tsx 의 onStartFullSource 호출. */
+  const handleStartFullSource = (): void => {
+    if (repoParsed === null || estimate === null) return;
+    const options: FullSourceOptions = {
+      includePaths: splitFilter(filterPaths),
+      includeExts: splitFilter(filterExts),
+      excludeDefaults: true,
+    };
+    onStartFullSource(repoParsed, options);
+  };
+
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <header className="mb-8">
@@ -289,6 +368,143 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
           </button>
         )}
       </section>
+
+      {/* "전체 소스 리뷰" 진입 카드 — repo URL 감지 시에만 표시. */}
+      {repoParsed !== null && !fullSourceMode && (
+        <section className="mt-4" aria-label="전체 소스 리뷰 진입">
+          <button
+            type="button"
+            onClick={() => {
+              setFullSourceMode(true);
+              setEstimate(null);
+              setEstimateError(null);
+            }}
+            disabled={isReviewing}
+            className="w-full text-left p-5 rounded-2xl border-2 border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/40 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <span aria-hidden="true">📚</span>
+              <h3 className="font-semibold text-text-primary">전체 소스 리뷰</h3>
+              <span className="ml-auto text-xs font-semibold text-violet-700 dark:text-violet-200">신규</span>
+            </div>
+            <p className="text-sm text-text-secondary">
+              repo 전체 소스 코드를 검토합니다 (변경분이 아닌 전체). 필터로 디렉토리·확장자 좁히기 가능.
+            </p>
+          </button>
+        </section>
+      )}
+
+      {/* "전체 소스 리뷰" inline 패널 — 카드 클릭 시 전개. */}
+      {repoParsed !== null && fullSourceMode && (
+        <section className="mt-4 p-5 rounded-2xl border border-border bg-surface-alt" aria-label="전체 소스 리뷰 설정">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-text-primary">
+              전체 소스 리뷰 설정 — {repoParsed.owner}/{repoParsed.repo}
+            </h3>
+            <button
+              type="button"
+              onClick={() => {
+                setFullSourceMode(false);
+                setEstimate(null);
+                setEstimateError(null);
+              }}
+              className="text-sm text-text-secondary hover:text-text-primary"
+            >
+              취소
+            </button>
+          </div>
+
+          <div className="space-y-3 mb-4">
+            <label className="block">
+              <span className="text-sm font-semibold text-text-primary">디렉토리 필터 (선택)</span>
+              <input
+                type="text"
+                value={filterPaths}
+                onChange={(e) => setFilterPaths(e.target.value)}
+                placeholder="예: src/, lib/ (콤마 구분, 빈 값 = 전체)"
+                disabled={estimating || isReviewing}
+                className="mt-1 w-full px-3 py-2 rounded-md border border-border bg-surface text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 disabled:opacity-50"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-semibold text-text-primary">확장자 필터 (선택)</span>
+              <input
+                type="text"
+                value={filterExts}
+                onChange={(e) => setFilterExts(e.target.value)}
+                placeholder="예: .ts, .tsx, .py (콤마 구분, 빈 값 = 전체 텍스트 파일)"
+                disabled={estimating || isReviewing}
+                className="mt-1 w-full px-3 py-2 rounded-md border border-border bg-surface text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 disabled:opacity-50"
+              />
+            </label>
+            <p className="text-xs text-text-muted">node_modules, dist, build, lock 파일 등은 자동 제외됩니다.</p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void handleEstimate()}
+            disabled={estimating || isReviewing}
+            className="px-4 py-2 rounded-md bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 disabled:opacity-50 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+          >
+            {estimating ? '계산 중...' : '사이즈 계산'}
+          </button>
+
+          {estimate !== null && (
+            <div className="mt-4 p-4 rounded-lg bg-surface border border-border">
+              <h4 className="font-semibold text-text-primary mb-3">예상 비용</h4>
+              <dl className="grid grid-cols-2 gap-y-1 gap-x-4 text-sm">
+                <dt className="text-text-secondary">파일 수</dt>
+                <dd className="text-text-primary font-mono">{estimate.fileCount.toLocaleString()}건</dd>
+                <dt className="text-text-secondary">총 사이즈</dt>
+                <dd className="text-text-primary font-mono">{(estimate.totalBytes / 1024).toFixed(1)} KB</dd>
+                <dt className="text-text-secondary">예상 LOC</dt>
+                <dd className="text-text-primary font-mono">~{estimate.totalLoc.toLocaleString()}</dd>
+                <dt className="text-text-secondary">예상 입력 토큰</dt>
+                <dd className="text-text-primary font-mono">~{estimate.estimatedInputTokens.toLocaleString()}</dd>
+                <dt className="text-text-secondary">예상 출력 토큰</dt>
+                <dd className="text-text-primary font-mono">~{estimate.estimatedOutputTokens.toLocaleString()}</dd>
+                <dt className="text-text-secondary">예상 비용</dt>
+                <dd className="text-text-primary font-mono font-bold">
+                  ~${estimate.estimatedCostUsd.toFixed(3)} (₩{Math.round(estimate.estimatedCostUsd * 1400).toLocaleString()})
+                </dd>
+              </dl>
+
+              {estimate.warnings.length > 0 && (
+                <ul className="mt-3 space-y-1">
+                  {estimate.warnings.map((w, i) => (
+                    <li key={i} className="text-xs text-amber-700 dark:text-amber-200">⚠️ {w}</li>
+                  ))}
+                </ul>
+              )}
+
+              {estimate.exceedsLimit && (
+                <div className="mt-3 p-3 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 text-sm text-red-900 dark:text-red-100">
+                  <strong>50K LOC 한계 초과</strong> — 필터로 좁히세요. 그대로 진행 시 일부 파일이 절단됩니다.
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleStartFullSource}
+                disabled={estimate.fileCount === 0 || isReviewing}
+                className="mt-4 w-full px-4 py-2.5 rounded-md bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2"
+              >
+                {estimate.fileCount === 0 ? '필터 결과 0건' : '전체 소스 리뷰 시작'}
+              </button>
+            </div>
+          )}
+
+          {estimateError !== null && (
+            <p role="alert" className="mt-3 text-sm text-severity-critical">
+              사이즈 계산 실패: {estimateError}
+            </p>
+          )}
+
+          {needsAuthCta(estimateError) && (
+            <AuthCta onOpenSettings={onOpenSettings} />
+          )}
+        </section>
+      )}
 
       {/* PR 목록 — repo URL 자동 감지 후 표시. */}
       {repoParsed !== null && prList !== null && prList.length > 0 && (

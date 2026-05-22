@@ -149,6 +149,22 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.yaml': 'yaml',
   '.json': 'json',
   '.md': 'markdown',
+  // 전체 소스 리뷰에서 인식 가능한 텍스트 파일 추가 — diff loader는 이 확장자도 'text' fallback으로
+  // 처리되고 있었지만, 전체 소스 리뷰 filter는 LANGUAGE_BY_EXT에 등록된 확장자만 통과시키므로 명시 확장.
+  '.scala': 'scala',
+  '.lua': 'lua',
+  '.r': 'r',
+  '.dart': 'dart',
+  '.vue': 'vue',
+  '.svelte': 'svelte',
+  '.astro': 'astro',
+  '.html': 'html',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.toml': 'toml',
+  '.mdx': 'mdx',
+  '.xml': 'xml',
+  '.ps1': 'powershell',
 };
 
 // ===== URL 파싱 =====
@@ -815,4 +831,479 @@ function truncateByBytes(text: string, maxBytes: number): string {
   if (buf.length <= maxBytes) return text;
   const decoder = new TextDecoder('utf-8', { fatal: false });
   return decoder.decode(buf.slice(0, maxBytes));
+}
+
+// ===== 전체 소스 리뷰 =====
+//
+// 단일 PR/commit/compare 가 아닌 repo 전체 코드(default branch 또는 지정 branch)를
+// 한 번의 Claude 호출로 검토. 50K LOC 한계 + 자동 제외 패턴 + 사용자 필터.
+
+/** 전체 소스 리뷰 필터 옵션. 모두 선택. */
+export interface FullSourceOptions {
+  /** 디렉토리 prefix (예: ['src/', 'lib/']) — 빈 배열/undefined면 전체. */
+  includePaths?: string[];
+  /** 확장자 (예: ['.ts', '.tsx']) — 빈 배열/undefined면 LANGUAGE_BY_EXT 매핑된 전체. */
+  includeExts?: string[];
+  /** 기본 제외 패턴 적용 여부 (default true: node_modules/dist/.git/binary 등 제외). */
+  excludeDefaults?: boolean;
+}
+
+/** 단일 텍스트 파일의 전체 내용. */
+export interface FullSourceFile {
+  path: string;
+  content: string;
+  bytes: number;
+  language: string;
+}
+
+/** 리뷰러에 전달되는 전체 소스 페이로드. */
+export interface FullSourcePayload {
+  meta: { owner: string; repo: string; branch: string };
+  files: FullSourceFile[];
+  totalBytes: number;
+  totalLoc: number;
+  truncated: boolean;
+  /** 자동 제외/fetch 실패/절단 등 처리 메모 — UI에 그대로 노출. */
+  notes: string[];
+}
+
+/** estimateFullSourceSize 결과. blob fetch 없이 tree 만으로 추정. */
+export interface SizeEstimate {
+  fileCount: number;
+  totalBytes: number;
+  totalLoc: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCostUsd: number;
+  /** 50K LOC 초과 시 true — UI에서 "이 상태로 호출하면 절단됩니다" 경고. */
+  exceedsLimit: boolean;
+  warnings: string[];
+}
+
+// ----- 상수: 자동 제외 / 한계 -----
+
+/** 빌드 산출물·VCS·가상환경 등 — 항상 코드 리뷰 대상 아님. */
+const EXCLUDED_DIRS: readonly string[] = [
+  'node_modules/',
+  'dist/',
+  'build/',
+  'target/',
+  '.git/',
+  '.next/',
+  '.nuxt/',
+  '.venv/',
+  '__pycache__/',
+  'vendor/',
+  '.svelte-kit/',
+  'out/',
+  '.turbo/',
+];
+
+/** lock 파일·minified·바이너리 — 텍스트지만 리뷰 가치 없음. */
+const EXCLUDED_FILE_PATTERNS: readonly RegExp[] = [
+  /\.lock$/,
+  /\.lock\.json$/,
+  /(^|\/)package-lock\.json$/,
+  /(^|\/)yarn\.lock$/,
+  /(^|\/)pnpm-lock\.yaml$/,
+  /\.min\.js$/,
+  /\.map$/,
+  /\.(png|jpg|jpeg|gif|ico|svg|webp|pdf|zip|tar\.gz|7z|woff2?|ttf|otf|eot|mp4|mp3)$/i,
+];
+
+/** 단일 호출 LOC 한계 — Sonnet 4.x context 안전 마진 + 비용 안전망. */
+const MAX_FULL_SOURCE_LOC = 50_000;
+/** 단일 파일 byte 한계 — 생성물/거대 데이터 파일 보호. */
+const MAX_FILE_BYTES = 100_000;
+/** GitHub git/blobs 동시 호출 한도 — rate limit + 네트워크 효율 균형. */
+const FULL_SOURCE_CONCURRENCY = 5;
+
+// ----- GitHub tree/blob 직접 호출 -----
+
+/** GitHub git/trees API 응답 element — Tauri WebView fetch 결과 타입. */
+interface RawTreeItem {
+  path?: string;
+  sha?: string;
+  size?: number;
+  type?: string;
+}
+
+/** repo 메타에서 default branch만 추출 (branch 미지정 시 사용). */
+interface RawRepoMeta {
+  default_branch?: string;
+}
+
+/** git/blobs 응답 — base64 인코딩된 파일 내용. */
+interface RawBlobResponse {
+  content?: string;
+  encoding?: string;
+  size?: number;
+}
+
+/** Tree item — 'blob' 타입만 (디렉토리 제외) — 정규화된 형태. */
+export interface TreeBlob {
+  path: string;
+  sha: string;
+  size: number;
+  type: 'blob';
+}
+
+/**
+ * GitHub repo의 전체 파일 트리(recursive)를 fetch.
+ *
+ * branch 미지정 시 default_branch를 자동 조회.
+ *
+ * @param parsed - owner/repo.
+ * @param token - 선택. 비인증은 rate limit 60/h.
+ * @param branch - 선택. 미지정 시 repo default branch 사용.
+ * @returns 사용한 branch명 + tree (blob 타입만).
+ * @throws Error - 404 / 401 / rate limit.
+ */
+export async function fetchRepoTree(
+  parsed: ParsedRepoUrl,
+  token?: string,
+  branch?: string,
+): Promise<{ branch: string; tree: TreeBlob[]; treeWasTruncated: boolean }> {
+  const baseHeaders = {
+    ...buildHeaders(token),
+    Accept: 'application/vnd.github+json',
+  };
+
+  // 1) branch 결정
+  let resolvedBranch = branch;
+  if (!resolvedBranch) {
+    const repoUrl = `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}`;
+    const res = await fetch(repoUrl, { headers: baseHeaders });
+    await throwIfBad(res, 'repo 메타');
+    const meta = (await res.json()) as RawRepoMeta;
+    resolvedBranch = meta.default_branch ?? '';
+    if (!resolvedBranch) {
+      throw new Error('repo default branch를 확인할 수 없습니다');
+    }
+  }
+
+  // 2) tree (recursive) — branch 이름을 URL segment로 인코딩 (feature/x 같은 슬래시 ref 지원)
+  const treeUrl = `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(resolvedBranch)}?recursive=1`;
+  const treeRes = await fetch(treeUrl, { headers: baseHeaders });
+  await throwIfBad(treeRes, 'repo tree');
+  const treeJson = (await treeRes.json()) as { tree?: unknown; truncated?: boolean };
+
+  const rawTree = Array.isArray(treeJson.tree) ? treeJson.tree : [];
+  const tree: TreeBlob[] = [];
+  for (const item of rawTree) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as RawTreeItem;
+    if (r.type !== 'blob') continue;
+    if (typeof r.path !== 'string' || !r.path) continue;
+    if (typeof r.sha !== 'string' || !r.sha) continue;
+    tree.push({
+      path: r.path,
+      sha: r.sha,
+      size: typeof r.size === 'number' ? r.size : 0,
+      type: 'blob',
+    });
+  }
+  // truncated=true (GitHub recursive tree 응답이 잘림)는 매우 큰 monorepo에서만 발생.
+  // 호출자가 warnings/notes 에 명시적으로 노출할 수 있도록 신호를 그대로 전달.
+  const treeWasTruncated = treeJson.truncated === true;
+
+  return { branch: resolvedBranch, tree, treeWasTruncated };
+}
+
+/**
+ * 단일 파일 blob을 fetch (base64 → UTF-8 decode).
+ *
+ * binary 또는 깨진 UTF-8이면 TextDecoder가 throw — 호출자가 Promise.allSettled로 skip 처리.
+ *
+ * @throws Error - 인코딩 'base64' 아님 / 깨진 UTF-8 / 401·404·rate limit.
+ */
+export async function fetchFileBlob(
+  parsed: ParsedRepoUrl,
+  sha: string,
+  token?: string,
+): Promise<string> {
+  const url = `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}/git/blobs/${sha}`;
+  const headers = {
+    ...buildHeaders(token),
+    Accept: 'application/vnd.github+json',
+  };
+
+  const res = await fetch(url, { headers });
+  await throwIfBad(res, 'blob');
+  const body = (await res.json()) as RawBlobResponse;
+
+  if (body.encoding !== 'base64') {
+    throw new Error(`예상치 못한 encoding: ${body.encoding ?? '(없음)'}`);
+  }
+  const content = typeof body.content === 'string' ? body.content : '';
+  if (!content) return '';
+
+  // base64 → bytes → UTF-8 strict decode (binary면 throw).
+  const binaryStr = atob(content.replace(/\n/g, ''));
+  const bytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
+  }
+  // fatal=true: 유효하지 않은 UTF-8 시퀀스(=대부분 binary)는 TypeError throw.
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+}
+
+// ----- 필터링 -----
+
+/**
+ * tree + options → 필터링 통과한 blob 목록 + 제외 사유.
+ *
+ * 적용 순서:
+ *  1) excludeDefaults=true(기본)면 EXCLUDED_DIRS / EXCLUDED_FILE_PATTERNS 제외
+ *  2) size > MAX_FILE_BYTES 제외
+ *  3) includePaths 지정 시 prefix 매칭
+ *  4) includeExts 지정 시 확장자 매칭
+ *  5) LANGUAGE_BY_EXT에 매핑된 확장자만 (텍스트 파일)
+ */
+function applyFilters(
+  tree: TreeBlob[],
+  options: FullSourceOptions,
+): { included: TreeBlob[]; excludedReasons: Array<{ path: string; reason: string }> } {
+  const excludeDefaults = options.excludeDefaults !== false; // default true
+  const includePaths = options.includePaths?.filter(p => p.length > 0) ?? [];
+  const includeExts = (options.includeExts ?? [])
+    .filter(e => e.length > 0)
+    .map(e => e.toLowerCase());
+
+  const included: TreeBlob[] = [];
+  const excludedReasons: Array<{ path: string; reason: string }> = [];
+
+  for (const item of tree) {
+    const path = item.path;
+
+    // 1) 기본 제외 패턴
+    if (excludeDefaults) {
+      let excluded = false;
+      for (const dir of EXCLUDED_DIRS) {
+        if (path.startsWith(dir) || path.includes(`/${dir}`)) {
+          excludedReasons.push({ path, reason: `dir: ${dir}` });
+          excluded = true;
+          break;
+        }
+      }
+      if (excluded) continue;
+
+      let patternMatched = false;
+      for (const pat of EXCLUDED_FILE_PATTERNS) {
+        if (pat.test(path)) {
+          excludedReasons.push({ path, reason: `pattern: ${pat.source}` });
+          patternMatched = true;
+          break;
+        }
+      }
+      if (patternMatched) continue;
+    }
+
+    // 2) 단일 파일 크기 한계
+    if (item.size > MAX_FILE_BYTES) {
+      excludedReasons.push({ path, reason: `size > ${MAX_FILE_BYTES} bytes` });
+      continue;
+    }
+
+    // 3) includePaths
+    if (includePaths.length > 0) {
+      const matched = includePaths.some(prefix => path.startsWith(prefix));
+      if (!matched) {
+        // 사용자 의도적 제외 — excludedReasons에 기록하지 않음 (notes 잡음 방지).
+        continue;
+      }
+    }
+
+    // 4) includeExts
+    if (includeExts.length > 0) {
+      const ext = extractExtension(path);
+      if (!includeExts.includes(ext)) continue;
+    }
+
+    // 5) LANGUAGE_BY_EXT에 매핑된 확장자만 (텍스트 파일 식별)
+    const ext = extractExtension(path);
+    if (!LANGUAGE_BY_EXT[ext]) {
+      // 비텍스트(또는 인식 못하는) 확장자 — 자동 제외, 사용자 잡음 줄이려 notes 안 남김.
+      continue;
+    }
+
+    included.push(item);
+  }
+
+  return { included, excludedReasons };
+}
+
+/** path → 소문자 확장자 (도트 포함). 없으면 빈 문자열. */
+function extractExtension(path: string): string {
+  const m = path.toLowerCase().match(/\.[^./]+$/);
+  return m ? m[0] : '';
+}
+
+// ----- orchestrator -----
+
+/**
+ * Repo 전체 소스를 fetch해서 Claude 리뷰 가능한 페이로드로 조립.
+ *
+ * 흐름:
+ *  1) fetchRepoTree (default branch 자동 해석)
+ *  2) applyFilters (자동 제외 + 사용자 필터)
+ *  3) 동시성 제한된 blob fetch (5개씩, allSettled로 binary/실패 자동 skip)
+ *  4) LOC 합산, 50K 초과 시 path 알파벳 순으로 절단
+ *  5) notes 구성 (제외/실패/절단 건수)
+ *
+ * @param parsed - owner/repo.
+ * @param token - 선택. private repo / rate limit 회피 시 필요.
+ * @param options - 필터 옵션. 모두 선택.
+ * @returns FullSourcePayload — reviewFullSource에 그대로 넘김.
+ */
+export async function loadFullSourceFromRepo(
+  parsed: ParsedRepoUrl,
+  token?: string,
+  options: FullSourceOptions = {},
+): Promise<FullSourcePayload> {
+  const { branch, tree, treeWasTruncated } = await fetchRepoTree(parsed, token);
+  const { included, excludedReasons } = applyFilters(tree, options);
+
+  const files: FullSourceFile[] = [];
+  const fetchErrors: string[] = [];
+
+  // 동시성 제한 chunk 처리
+  for (let i = 0; i < included.length; i += FULL_SOURCE_CONCURRENCY) {
+    const chunk = included.slice(i, i + FULL_SOURCE_CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map(async (item): Promise<FullSourceFile> => {
+        const content = await fetchFileBlob(parsed, item.sha, token);
+        return {
+          path: item.path,
+          content,
+          bytes: item.size,
+          language: detectLanguage(item.path),
+        };
+      }),
+    );
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled') {
+        files.push(r.value);
+      } else {
+        const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        fetchErrors.push(`${chunk[idx]!.path}: ${reason}`);
+      }
+    });
+  }
+
+  // LOC 계산 (1차 — truncate 전)
+  let preTruncLoc = 0;
+  let preTruncBytes = 0;
+  for (const f of files) {
+    preTruncLoc += countLines(f.content);
+    preTruncBytes += f.bytes;
+  }
+
+  // 50K LOC 한계 적용 — path 알파벳 순으로 누적, 초과되는 시점에서 stop.
+  let truncated = false;
+  let finalFiles: FullSourceFile[] = files;
+  let totalLoc = preTruncLoc;
+  let totalBytes = preTruncBytes;
+  if (preTruncLoc > MAX_FULL_SOURCE_LOC) {
+    truncated = true;
+    const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
+    finalFiles = [];
+    let accumLoc = 0;
+    let accumBytes = 0;
+    for (const f of sorted) {
+      const fLoc = countLines(f.content);
+      if (accumLoc + fLoc > MAX_FULL_SOURCE_LOC) break;
+      finalFiles.push(f);
+      accumLoc += fLoc;
+      accumBytes += f.bytes;
+    }
+    totalLoc = accumLoc;
+    totalBytes = accumBytes;
+  }
+
+  const notes: string[] = [];
+  if (treeWasTruncated) {
+    notes.push('GitHub tree API 한계 도달 — 일부 파일이 트리에서 누락됐을 수 있습니다');
+  }
+  if (excludedReasons.length > 0) {
+    notes.push(`자동 제외 ${excludedReasons.length}건 (node_modules/생성물/대용량/binary 등)`);
+  }
+  if (fetchErrors.length > 0) {
+    notes.push(`fetch 실패 ${fetchErrors.length}건 (binary 파일 등 자동 스킵)`);
+  }
+  if (truncated) {
+    const dropped = files.length - finalFiles.length;
+    notes.push(`50K LOC 한계 초과 — ${dropped}개 파일 절단됨. 필터(경로/확장자)로 좁히세요.`);
+  }
+
+  return {
+    meta: { owner: parsed.owner, repo: parsed.repo, branch },
+    files: finalFiles,
+    totalBytes,
+    totalLoc,
+    truncated,
+    notes,
+  };
+}
+
+/**
+ * Blob fetch 없이 tree만으로 사이즈/비용 추정.
+ * UI에서 사용자가 "전체 소스 리뷰" 버튼 누르기 전 사전 확인용.
+ */
+export async function estimateFullSourceSize(
+  parsed: ParsedRepoUrl,
+  token?: string,
+  options: FullSourceOptions = {},
+): Promise<SizeEstimate> {
+  const { tree, treeWasTruncated } = await fetchRepoTree(parsed, token);
+  const { included, excludedReasons } = applyFilters(tree, options);
+
+  const totalBytes = included.reduce((s, f) => s + f.size, 0);
+  // LOC 추정: 1줄 평균 50바이트 가정 (코드 평균 — 주석/공백 포함).
+  const totalLoc = Math.round(totalBytes / 50);
+
+  // 토큰 추정: 영문 코드 1토큰 ≈ 4바이트. + system prompt 오버헤드 ~2K.
+  const estimatedInputTokens = Math.round(totalBytes / 4) + 2000;
+  const estimatedOutputTokens = 4000; // typical review output
+
+  // Sonnet 4.x 가격 (2026-04 기준): $3/MTok input · $15/MTok output.
+  const estimatedCostUsd =
+    (estimatedInputTokens * 3 + estimatedOutputTokens * 15) / 1_000_000;
+
+  const warnings: string[] = [];
+  if (treeWasTruncated) {
+    warnings.push(
+      'GitHub tree API 한계 도달 — repo가 매우 커서 일부 파일 목록이 누락됐을 수 있습니다 (100K+ 파일 monorepo)',
+    );
+  }
+  if (!token) {
+    warnings.push(
+      `GitHub 토큰 없음 — rate limit 60/h. ${included.length}개 파일 fetch 중 한계 도달 위험`,
+    );
+  }
+  if (excludedReasons.length > 0) {
+    warnings.push(`${excludedReasons.length}개 파일 자동 제외 (생성물/대용량/binary)`);
+  }
+  if (totalLoc > MAX_FULL_SOURCE_LOC) {
+    warnings.push(
+      `예상 ${totalLoc.toLocaleString()} LOC가 한계(${MAX_FULL_SOURCE_LOC.toLocaleString()})를 초과 — 일부 파일이 절단됩니다`,
+    );
+  }
+
+  return {
+    fileCount: included.length,
+    totalBytes,
+    totalLoc,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedCostUsd,
+    exceedsLimit: totalLoc > MAX_FULL_SOURCE_LOC,
+    warnings,
+  };
+}
+
+/** 빈 마지막 줄도 포함한 줄 수 — Python `len(content.splitlines())` 와는 다른 split('\n').length 방식. */
+function countLines(content: string): number {
+  if (!content) return 0;
+  return content.split('\n').length;
 }

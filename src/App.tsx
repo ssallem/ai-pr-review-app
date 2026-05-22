@@ -37,13 +37,15 @@ import { checkClaudeCode, reviewDiffWithClaudeCode } from './lib/claudeCode';
 import {
   loadCommitFromGitHub,
   loadCompareFromGitHub,
+  loadFullSourceFromRepo,
   loadPRFromGitHub,
   parseCommitUrl,
   parseCompareUrl,
   parsePRUrl,
   type DiffPayload,
+  type FullSourceOptions,
 } from './lib/githubClient';
-import { reviewDiff, type ReviewResult } from './lib/reviewer';
+import { reviewDiff, reviewFullSource, type ReviewResult } from './lib/reviewer';
 import {
   addRecentReview,
   applyTheme,
@@ -68,6 +70,11 @@ interface ReviewMeta {
   isCached?: boolean;
   /** 캐시된 결과의 원분석 일자 (ko-KR 포맷). 예: "2026. 5. 22.". */
   cachedDate?: string;
+  /**
+   * 리뷰 모드 — diff (PR/commit/compare) vs full-source (repo 전체).
+   * Result/Reviewing 화면에서 분기 표시 가능. 미지정 시 'diff' 로 간주.
+   */
+  mode?: 'diff' | 'full-source';
 }
 
 export default function App() {
@@ -254,6 +261,108 @@ export default function App() {
     }
   };
 
+  /**
+   * "전체 소스 리뷰" 시작 — repo 전체 트리를 Claude 로 검토.
+   *
+   * 흐름:
+   *   1) authMode 검사 — claude-code 는 1차 미지원 (v0.2 로 연기).
+   *   2) loadFullSourceFromRepo → repo tree fetch + 필터 적용.
+   *   3) reviewFullSource → Claude API 호출.
+   *   4) addRecentReview + saveReviewCache → 최근 목록/캐시 보존.
+   *
+   * recent 의 pr_url 은 `#full-source` 프래그먼트로 sentinel 처리:
+   *   - 캐시 hit 시: handleRecentSelect 가 cache 를 그대로 띄움 (정상).
+   *   - 캐시 miss 시: handleStartReview 로 fallback 되지만 PR/commit/compare 어느 것도
+   *     매치되지 않아 에러. v0.1 한계 (재분석은 같은 repo URL 재입력으로 회피).
+   */
+  const handleStartFullSource = async (
+    parsed: { owner: string; repo: string },
+    options: FullSourceOptions,
+  ): Promise<void> => {
+    const settings = getSettings();
+
+    // v0.1: Claude Code (Max) 모드 미지원 — API 키 모드만.
+    // 이유: reviewFullSourceWithClaudeCode 가 아직 없음. v0.2 에서 추가.
+    if (settings.authMode === 'claude-code') {
+      setReviewError(
+        '전체 소스 리뷰는 현재 API 키 모드에서만 지원됩니다. Settings 에서 인증 모드를 변경하세요.',
+      );
+      setScreen('input'); // 명시적으로 input으로 복귀 (이전 screen이 result일 수도 있음)
+      return;
+    }
+
+    setScreen('reviewing');
+    setReviewError(null);
+    setReviewMeta({
+      prTitle: `${parsed.owner}/${parsed.repo} — 전체 소스 리뷰`,
+      prUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
+      repoName: `${parsed.owner}/${parsed.repo}`,
+      mode: 'full-source',
+    });
+    setReviewProgress({
+      stage: 'fetching',
+      message: 'GitHub repo 전체 소스 가져오는 중...',
+    });
+
+    try {
+      const token = await getGithubToken();
+      const payload = await loadFullSourceFromRepo(parsed, token ?? undefined, options);
+
+      setReviewProgress({
+        stage: 'analyzing',
+        message: `${payload.files.length}개 파일 Claude 분석 중 (3~10분 소요)`,
+        fileCount: payload.files.length,
+        totalLOC: payload.totalLoc,
+        filenames: payload.files.map((f) => f.path),
+      });
+
+      const apiKey = await getApiKey();
+      if (apiKey === null || apiKey === '') {
+        setReviewError('API 키가 없습니다. 설정에서 등록해주세요.');
+        setScreen('input');
+        return;
+      }
+
+      // 대용량 전체 소스에서 출력 토큰 부족으로 JSON truncation되는 위험을 줄이기 위해
+      // maxTokens를 명시적으로 8000으로 상향 (기본값 4000).
+      const result = await reviewFullSource(payload, apiKey, { maxTokens: 8000 });
+
+      setReviewProgress({
+        stage: 'finishing',
+        message: '결과 정리 중...',
+        fileCount: payload.files.length,
+        totalLOC: payload.totalLoc,
+      });
+
+      setReviewResult(result);
+
+      // 최근 목록 + 캐시 저장.
+      const recentId = crypto.randomUUID();
+      const reviewTitle = `${parsed.owner}/${parsed.repo} — 전체 소스 리뷰`;
+      const sentinelUrl = `https://github.com/${parsed.owner}/${parsed.repo}#full-source`;
+      addRecentReview({
+        id: recentId,
+        pr_url: sentinelUrl,
+        pr_title: reviewTitle,
+        date: new Date().toISOString(),
+        critical: result.issues.filter((i) => i.severity === 'CRITICAL').length,
+        warning: result.issues.filter((i) => i.severity === 'WARNING').length,
+        suggestion: result.issues.filter((i) => i.severity === 'SUGGESTION').length,
+        duration_sec: Math.round(result.duration_ms / 1000),
+      });
+      const cacheSaved = saveReviewCache(recentId, result);
+      if (!cacheSaved) {
+        console.warn(
+          'Full-source review cache save failed (likely localStorage quota). Item will not appear cached in recent list.',
+        );
+      }
+      setScreen('result');
+    } catch (e) {
+      setReviewError(`전체 소스 리뷰 실패: ${e instanceof Error ? e.message : String(e)}`);
+      setScreen('input');
+    }
+  };
+
   const handleToggleDark = (): void => {
     const next = isDark ? 'light' : 'dark';
     applyTheme(next);
@@ -277,6 +386,15 @@ export default function App() {
   const handleRecentSelect = (id: string, prUrl: string): void => {
     const cached = getReviewCache(id);
     if (cached === null) {
+      // 캐시 miss — 전체 소스 리뷰 sentinel URL은 PR/commit/compare 어느 것도 매치되지
+      // 않아 handleStartReview에서 에러가 난다. 명확한 안내 메시지로 입력란 재입력을 유도.
+      if (prUrl.endsWith('#full-source')) {
+        setReviewError(
+          '전체 소스 리뷰 캐시가 만료되었습니다. 위 URL 입력란에 repo URL을 다시 붙여넣어 "전체 소스 리뷰" 카드로 재분석하세요.',
+        );
+        setScreen('input');
+        return;
+      }
       void handleStartReview(prUrl);
       return;
     }
@@ -345,6 +463,9 @@ export default function App() {
             error={reviewError}
             onOpenSettings={() => setScreen('settings')}
             onRecentSelect={handleRecentSelect}
+            onStartFullSource={(parsed, options) =>
+              void handleStartFullSource(parsed, options)
+            }
           />
         )}
         {screen === 'reviewing' && (
