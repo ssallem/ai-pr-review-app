@@ -16,9 +16,10 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
-import type { DiffPayload } from './githubClient';
-import { REVIEW_SYSTEM_PROMPT } from './prompts';
+import type { DiffPayload, FullSourcePayload } from './githubClient';
+import { FULL_SOURCE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT } from './prompts';
 import {
+  buildFullSourceUserMessage,
   buildUserMessage,
   parseReviewResponse,
   type ReviewResult,
@@ -101,6 +102,73 @@ export async function reviewDiffWithClaudeCode(diff: DiffPayload): Promise<Revie
   const warnings = [...parseWarnings];
   if (diff.truncated) {
     warnings.push('입력 diff가 절단됨 — 일부 변경이 리뷰에서 누락되었을 수 있음');
+  }
+
+  return {
+    issues,
+    summary: summary || rawResponse,
+    warnings,
+    raw_response: rawResponse,
+    usage: {
+      // Max 모드는 토큰 카운트를 응답에 노출하지 않음.
+      input_tokens: 0,
+      output_tokens: 0,
+    },
+    duration_ms: durationMs,
+  };
+}
+
+/**
+ * Claude Code(Max) CLI subprocess 로 전체 소스 리뷰.
+ * `reviewDiffWithClaudeCode` 와 동일 패턴 — 시스템 프롬프트 + user message 빌더만 다름.
+ *
+ * 비용: ₩0 (사용자 본인 Claude.ai Max 구독 사용).
+ * 한계: 50K LOC (단일 호출 한계, claudeCode 도 결국 같은 모델 호출).
+ *       payload.truncated 가 true 면 warnings 에 명시.
+ *
+ * 주의: Rust `claude_code_invoke` 의 두 번째 인자 이름이 'diff' 지만 의미상 user message 다.
+ *       Rust side 에서 `format!("{}\n\n{}", prompt, diff)` 로 단순 concat 후 stdin 으로 전달하므로
+ *       전체 소스 user message 도 그대로 사용 가능.
+ */
+export async function reviewFullSourceWithClaudeCode(
+  payload: FullSourcePayload,
+): Promise<ReviewResult> {
+  if (!isTauri()) {
+    throw new Error('Claude Code 리뷰는 Tauri 데스크탑 앱에서만 동작합니다 (브라우저 preview 불가).');
+  }
+  // 빈 payload 가드 — reviewer.ts 와 동일 정책.
+  if (payload.files.length === 0) {
+    return {
+      issues: [],
+      summary: '리뷰할 파일이 없습니다 (필터 결과 0건).',
+      warnings: ['파일 0건 — 필터 조건을 확인하세요'],
+      raw_response: '',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      duration_ms: 0,
+    };
+  }
+
+  const userMessage = buildFullSourceUserMessage(payload);
+  const startedAt = Date.now();
+
+  let rawResponse: string;
+  try {
+    rawResponse = await invoke<string>('claude_code_invoke', {
+      prompt: FULL_SOURCE_SYSTEM_PROMPT,
+      diff: userMessage,
+    });
+  } catch (e) {
+    throw new Error(
+      `Claude Code 호출 실패: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  const durationMs = Date.now() - startedAt;
+
+  const { issues, summary, warnings: parseWarnings } = parseReviewResponse(rawResponse);
+
+  const warnings = [...parseWarnings];
+  if (payload.truncated) {
+    warnings.push('입력 소스가 50K LOC 한계로 절단됨 — 일부 파일이 리뷰에서 누락됨');
   }
 
   return {
