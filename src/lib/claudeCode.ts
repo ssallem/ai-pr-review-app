@@ -33,6 +33,64 @@ export interface ClaudeCodeAvailability {
 }
 
 /**
+ * `claude -p --output-format json` 응답 shape (Phase 2-D, 2026-05-22).
+ *
+ * 예시:
+ * ```
+ * {
+ *   "type": "result",
+ *   "total_cost_usd": 0.0,
+ *   "total_input_tokens": 12500,
+ *   "total_output_tokens": 800,
+ *   "session_id": "...",
+ *   "result": "...실제 응답 텍스트..."
+ * }
+ * ```
+ *
+ * Max 구독은 `total_cost_usd` 가 0.0 으로 오지만 토큰 카운트는 그대로 채워짐 → usage 메트릭에 사용 가능.
+ */
+interface ClaudeCodeJsonResponse {
+  type?: string;
+  total_cost_usd?: number;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  session_id?: string;
+  result?: string;
+}
+
+/**
+ * Claude Code CLI stdout 을 파싱해 (text, usage) 분리.
+ *
+ * - 정상 JSON: `result` 텍스트 + 토큰 카운트 복원.
+ * - JSON parse 실패 (구버전 CLI 가 `--output-format` 미지원 → plain text 그대로 stdout):
+ *   raw 전체를 text 로 폴백, usage 는 0/0 으로 silent degrade (리뷰 자체는 동작).
+ */
+function parseClaudeCodeOutput(raw: string): {
+  text: string;
+  usage: { input_tokens: number; output_tokens: number };
+  jsonOk: boolean;
+} {
+  try {
+    const parsed = JSON.parse(raw) as ClaudeCodeJsonResponse;
+    if (parsed && typeof parsed.result === 'string') {
+      return {
+        text: parsed.result,
+        usage: {
+          input_tokens:
+            typeof parsed.total_input_tokens === 'number' ? parsed.total_input_tokens : 0,
+          output_tokens:
+            typeof parsed.total_output_tokens === 'number' ? parsed.total_output_tokens : 0,
+        },
+        jsonOk: true,
+      };
+    }
+  } catch {
+    // JSON parse 실패 — 구버전 CLI 가능성, plain text fallback.
+  }
+  return { text: raw, usage: { input_tokens: 0, output_tokens: 0 }, jsonOk: false };
+}
+
+/**
  * Tauri 환경 가드 — 브라우저(`npm run preview`)에서는 invoke 가 throw 하므로
  * 화면 fold 대신 명시적 `{ available: false }` 를 반환해 Onboarding 으로 안전 fallback.
  */
@@ -97,23 +155,28 @@ export async function reviewDiffWithClaudeCode(diff: DiffPayload): Promise<Revie
   }
   const durationMs = Date.now() - startedAt;
 
-  const { issues, summary, warnings: parseWarnings } = parseReviewResponse(rawResponse);
+  // Phase 2-D: `--output-format json` 응답에서 result 텍스트 + 토큰 카운트 분리.
+  // 구버전 CLI 면 plain text 그대로 + usage 0/0 fallback.
+  const { text: cleanResponse, usage, jsonOk } = parseClaudeCodeOutput(rawResponse);
+
+  const { issues, summary, warnings: parseWarnings } = parseReviewResponse(cleanResponse);
 
   const warnings = [...parseWarnings];
+  if (!jsonOk) {
+    warnings.push(
+      '토큰 사용량 정보 미수신 (Claude Code CLI 구버전일 수 있습니다. npm i -g @anthropic-ai/claude-code@latest 권장)',
+    );
+  }
   if (diff.truncated) {
     warnings.push('입력 diff가 절단됨 — 일부 변경이 리뷰에서 누락되었을 수 있음');
   }
 
   return {
     issues,
-    summary: summary || rawResponse,
+    summary: summary || cleanResponse,
     warnings,
-    raw_response: rawResponse,
-    usage: {
-      // Max 모드는 토큰 카운트를 응답에 노출하지 않음.
-      input_tokens: 0,
-      output_tokens: 0,
-    },
+    raw_response: cleanResponse,
+    usage,
     duration_ms: durationMs,
   };
 }
@@ -164,23 +227,28 @@ export async function reviewFullSourceWithClaudeCode(
   }
   const durationMs = Date.now() - startedAt;
 
-  const { issues, summary, warnings: parseWarnings } = parseReviewResponse(rawResponse);
+  // Phase 2-D: `--output-format json` 응답에서 result 텍스트 + 토큰 카운트 분리.
+  // 구버전 CLI 면 plain text 그대로 + usage 0/0 fallback.
+  const { text: cleanResponse, usage, jsonOk } = parseClaudeCodeOutput(rawResponse);
+
+  const { issues, summary, warnings: parseWarnings } = parseReviewResponse(cleanResponse);
 
   const warnings = [...parseWarnings];
+  if (!jsonOk) {
+    warnings.push(
+      '토큰 사용량 정보 미수신 (Claude Code CLI 구버전일 수 있습니다. npm i -g @anthropic-ai/claude-code@latest 권장)',
+    );
+  }
   if (payload.truncated) {
     warnings.push('입력 소스가 50K LOC 한계로 절단됨 — 일부 파일이 리뷰에서 누락됨');
   }
 
   return {
     issues,
-    summary: summary || rawResponse,
+    summary: summary || cleanResponse,
     warnings,
-    raw_response: rawResponse,
-    usage: {
-      // Max 모드는 토큰 카운트를 응답에 노출하지 않음.
-      input_tokens: 0,
-      output_tokens: 0,
-    },
+    raw_response: cleanResponse,
+    usage,
     duration_ms: durationMs,
   };
 }

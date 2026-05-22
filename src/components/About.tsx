@@ -22,7 +22,7 @@ interface Props {
   onClose: () => void;
 }
 
-const APP_VERSION = 'v0.1.0';
+const APP_VERSION = 'v1.0.0';
 const SITE_URL = 'https://ai-review-kit.pages.dev';
 const REPO_URL = 'https://github.com/ssallem/ai-pr-review-app';
 const ISSUES_URL = 'https://github.com/ssallem/ai-pr-review-app/issues';

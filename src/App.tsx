@@ -466,6 +466,7 @@ export default function App() {
             onStartFullSource={(parsed, options) =>
               void handleStartFullSource(parsed, options)
             }
+            authMode={getSettings().authMode}
           />
         )}
         {screen === 'reviewing' && (

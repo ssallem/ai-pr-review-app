@@ -39,6 +39,7 @@ import {
   getCachedReviewIds,
   getGithubToken,
   getRecentReviews,
+  type AuthMode,
   type RecentReview,
 } from '../lib/storage';
 
@@ -68,6 +69,12 @@ interface Props {
     parsed: { owner: string; repo: string },
     options: FullSourceOptions,
   ) => void;
+  /**
+   * 현재 인증 모드 — 사이즈 계산 결과의 "예상 비용" 표시 분기에 사용.
+   *  - 'claude-code': Claude Max 구독, 비용 ₩0 → "무료" 안내.
+   *  - 'api': Anthropic API 종량제 → USD/KRW 비용 표시.
+   */
+  authMode: AuthMode;
 }
 
 const Input: FC<Props> = ({
@@ -77,6 +84,7 @@ const Input: FC<Props> = ({
   onOpenSettings,
   onRecentSelect,
   onStartFullSource,
+  authMode,
 }) => {
   const [url, setUrl] = useState('');
   const [recent, setRecent] = useState<RecentReview[]>([]);
@@ -465,7 +473,11 @@ const Input: FC<Props> = ({
                 <dd className="text-text-primary font-mono">~{estimate.estimatedOutputTokens.toLocaleString()}</dd>
                 <dt className="text-text-secondary">예상 비용</dt>
                 <dd className="text-text-primary font-mono font-bold">
-                  ~${estimate.estimatedCostUsd.toFixed(3)} (₩{Math.round(estimate.estimatedCostUsd * 1400).toLocaleString()})
+                  {authMode === 'claude-code' ? (
+                    <span className="text-emerald-700 dark:text-emerald-300">무료 (Claude Max 구독)</span>
+                  ) : (
+                    <>~${estimate.estimatedCostUsd.toFixed(3)} (₩{Math.round(estimate.estimatedCostUsd * 1400).toLocaleString()})</>
+                  )}
                 </dd>
               </dl>
 

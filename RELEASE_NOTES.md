@@ -1,3 +1,13 @@
+# AI PR Review Toolkit v1.0.0 — 정식 출시 🎉
+
+> 2026-05-22 정식 출시. Windows EV 서명, GitHub Device Flow 인증,
+> 최근 리뷰 10건 로컬 캐시, 전체 소스 리뷰(repo 전체 + 필터),
+> Claude Code(Max) / Anthropic API 키 양 모드 지원, 다크 테마 정식화.
+
+기존 v0.1.0 출시 내역은 아래 v0.1.0 섹션 참조.
+
+---
+
 # AI PR Review Toolkit v0.1.0 — 첫 출시 🎉
 
 ## 한 줄 요약

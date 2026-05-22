@@ -143,16 +143,22 @@ fn build_check_command() -> Command {
 }
 
 /// 플랫폼별 `claude -p` 호출 Command 생성 (stdin 입력 대기 모드).
+///
+/// Phase 2-D (2026-05-22): `--output-format json` 추가.
+///   - stdout 이 `{ "type": "result", "total_input_tokens": N, "total_output_tokens": M, "result": "..." }` JSON 으로 옴.
+///   - claudeCode.ts 의 parseClaudeCodeOutput 가 파싱해서 usage 채움.
+///   - 구버전 CLI (`--output-format` 미지원) 환경에서는 frontend 가 plain text 로 폴백.
 #[cfg(target_os = "windows")]
 fn build_invoke_command() -> Command {
     // powershell 의 `$input` 자동 변수로 stdin 을 claude 에 파이프.
     // -p 는 headless print mode (Claude Code CLI).
+    // `--output-format json` 은 `--` prefix 라 powershell 이 별도 해석 없이 그대로 전달.
     let mut c = Command::new("powershell");
     c.args([
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "$input | claude -p",
+        "$input | claude -p --output-format json",
     ]);
     c
 }
@@ -160,7 +166,7 @@ fn build_invoke_command() -> Command {
 #[cfg(not(target_os = "windows"))]
 fn build_invoke_command() -> Command {
     let mut c = Command::new("claude");
-    c.arg("-p");
+    c.args(["-p", "--output-format", "json"]);
     c
 }
 
