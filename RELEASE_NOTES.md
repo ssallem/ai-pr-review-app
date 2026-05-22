@@ -6,6 +6,25 @@ GitHub PR을 **Claude**로 한국어 코드 리뷰 + 자동 수정 프롬프트 
 
 ---
 
+## 🔧 v0.1.0 재빌드 (2026-05-22) — CRITICAL 버그 수정
+
+이전 v0.1.0 빌드는 GitHub 인증 토큰이 Windows Credential Manager에 실제로 저장되지 않는 버그가 있었습니다. 같은 v0.1.0 태그에 새 asset으로 교체된 버전을 다운로드해 주세요.
+
+**수정된 증상**
+- Settings에서 GitHub 계정 연결 직후 "✓ 연결됨" 표시 → 재진입 시 사라지던 문제
+- private repo PR URL 입력 시 "404 not found" 에러로 접근 불가
+
+**원인**: Tauri 빌드의 keyring 의존성이 Windows native backend를 링크하지 않아 mock fallback이 사용되고 있었습니다.
+
+**기존 v0.1.0 사용자에게 필요한 액션**:
+1. 새 MSI/EXE를 다운로드해 덮어쓰기 설치
+2. 앱 실행 후 Settings → "GitHub 계정으로 연결"로 **재로그인** (이전 빌드는 wincred에 실제 데이터가 없어 마이그레이션 손실은 없습니다)
+
+추가 개선:
+- private repo PR fetch 실패 시 "Settings 열기 →" 안내 박스 자동 표시 (인라인 CTA)
+
+---
+
 ## ✨ 주요 기능
 
 1. **GitHub URL 입력만으로 리뷰** — PR / commit / compare 3가지 URL 형식 지원
