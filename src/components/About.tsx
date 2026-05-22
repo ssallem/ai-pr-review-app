@@ -51,18 +51,18 @@ const About: FC<Props> = ({ onClose }) => {
 
       {/* Hero */}
       <section className="rounded-2xl bg-gradient-to-br from-brand-50 via-surface to-violet-50 dark:from-brand-900/20 dark:via-surface dark:to-violet-900/20 p-6 sm:p-8 mb-6">
-        <h1 className="text-3xl font-extrabold text-brand-500 mb-2">AI PR Review Toolkit</h1>
-        <p className="text-text-secondary mb-4">
+        <h1 className="text-3xl font-extrabold text-brand-500 dark:text-brand-100 mb-2">AI PR Review Toolkit</h1>
+        <p className="text-text-secondary dark:text-text-primary mb-4">
           Claude로 한국어 PR 리뷰를 자동화하는 데스크톱 앱
         </p>
         <div className="flex flex-wrap gap-2 text-xs">
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-100 font-bold">
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-100 font-bold">
             {APP_VERSION}
           </span>
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-100 font-bold">
             MIT License
           </span>
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-alt text-text-secondary font-mono">
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-alt text-text-secondary dark:text-slate-300 font-mono">
             Made by FirstNode
           </span>
         </div>

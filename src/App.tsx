@@ -64,6 +64,10 @@ interface ReviewMeta {
   prUrl: string;
   /** 'owner/repo' — reviewing 화면 상단 표시용. */
   repoName?: string;
+  /** 최근 리뷰에서 캐시 hit 으로 복원된 결과인지. Result Hero 에 배지 표시. */
+  isCached?: boolean;
+  /** 캐시된 결과의 원분석 일자 (ko-KR 포맷). 예: "2026. 5. 22.". */
+  cachedDate?: string;
 }
 
 export default function App() {
@@ -285,11 +289,16 @@ export default function App() {
     const repo = prParsed?.repo ?? commitParsed?.repo ?? compareParsed?.repo ?? null;
     const repoName = owner !== null && repo !== null ? `${owner}/${repo}` : undefined;
 
-    // 최근 목록에서 title 복구. 없으면 fallback URL.
-    const title = getRecentReviews().find((r) => r.id === id)?.pr_title ?? prUrl;
+    // 최근 목록에서 title + date 복구. 없으면 fallback URL/undefined.
+    const recentItem = getRecentReviews().find((r) => r.id === id);
+    const title = recentItem?.pr_title ?? prUrl;
+    const cachedDate =
+      recentItem?.date !== undefined && recentItem.date !== ''
+        ? new Date(recentItem.date).toLocaleDateString('ko-KR')
+        : undefined;
 
     setReviewResult(cached);
-    setReviewMeta({ prTitle: title, prUrl, repoName });
+    setReviewMeta({ prTitle: title, prUrl, repoName, isCached: true, cachedDate });
     setReviewError(null);
     setScreen('result');
   };
@@ -352,6 +361,8 @@ export default function App() {
             prTitle={reviewMeta?.prTitle}
             prUrl={reviewMeta?.prUrl}
             repoName={reviewMeta?.repoName}
+            isCached={reviewMeta?.isCached}
+            cachedDate={reviewMeta?.cachedDate}
             onNewReview={handleNewReview}
           />
         )}

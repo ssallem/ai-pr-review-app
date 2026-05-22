@@ -41,7 +41,7 @@ const SponsorBadges: FC = () => {
   return (
     <section className="my-8 rounded-2xl border border-border bg-surface-alt p-6 sm:p-8">
       <h3 className="text-lg font-bold text-text-primary mb-2">💝 이 도구가 마음에 드시나요?</h3>
-      <p className="text-sm text-text-secondary mb-5">
+      <p className="text-sm text-text-secondary dark:text-text-primary mb-5">
         자발적 후원으로 다음 기능 개발에 힘을 보태주세요. 모두 무료이지만 후원자 명단은 README에 게시됩니다.
       </p>
 
@@ -54,7 +54,7 @@ const SponsorBadges: FC = () => {
         >
           <span className="text-3xl" aria-hidden="true">❤️</span>
           <span className="text-base font-bold text-pink-700 dark:text-pink-100">GitHub Sponsors</span>
-          <span className="text-xs text-text-secondary">개발자 친화 글로벌 후원 채널</span>
+          <span className="text-xs text-text-secondary dark:text-text-primary">개발자 친화 글로벌 후원 채널</span>
         </button>
 
         {/* 카카오페이 송금 QR */}
@@ -65,7 +65,7 @@ const SponsorBadges: FC = () => {
         >
           <span className="text-3xl" aria-hidden="true">📱</span>
           <span className="text-base font-bold text-yellow-800 dark:text-yellow-100">카카오페이 송금</span>
-          <span className="text-xs text-text-secondary">국내 송금 QR 코드 보기</span>
+          <span className="text-xs text-text-secondary dark:text-text-primary">국내 송금 QR 코드 보기</span>
         </button>
       </div>
 

@@ -207,7 +207,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <header className="mb-8">
-        <p className="text-xs font-bold uppercase tracking-widest text-brand-500 mb-2">코드 리뷰</p>
+        <p className="text-xs font-bold uppercase tracking-widest text-brand-500 dark:text-brand-100 mb-2">코드 리뷰</p>
         <h2 className="text-3xl sm:text-4xl font-extrabold text-text-primary leading-tight">
           GitHub PR · commit · compare · repo 링크
         </h2>
@@ -381,8 +381,8 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
 
       {recent.length > 0 && (
         <section className="mt-8" aria-label="최근 리뷰 기록">
-          <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted mb-3">
-            최근 리뷰 <span className="font-normal normal-case tracking-normal text-text-muted">(최근 {recent.length}건)</span>
+          <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted dark:text-text-secondary mb-3">
+            최근 리뷰 <span className="font-normal normal-case tracking-normal text-text-muted dark:text-text-secondary">(최근 {recent.length}건)</span>
           </h3>
           <ul className="space-y-2">
             {recent.map((r) => {
@@ -405,7 +405,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-text-muted mt-1 font-mono truncate">{r.pr_url}</p>
+                      <p className="text-xs text-text-muted dark:text-text-secondary mt-1 font-mono truncate">{r.pr_url}</p>
                       <p className="text-xs text-text-secondary mt-1">
                         {formatDate(r.date)} · CRITICAL {r.critical} · WARNING {r.warning} · SUGGESTION {r.suggestion}
                       </p>
@@ -426,7 +426,7 @@ const Input: FC<Props> = ({ onStart, isReviewing, error, onOpenSettings, onRecen
               );
             })}
           </ul>
-          <p className="mt-2 text-xs text-text-muted">
+          <p className="mt-2 text-xs text-text-muted dark:text-text-secondary">
             ✓ 캐시됨 = 로컬 PC 에 저장된 결과로 즉시 표시 (Claude 재호출 없음). 새 분석은 ↻ 버튼.
             <br />
             공유 PC 라면 결과가 다음 사용자에게 노출될 수 있으니 사용 후 Settings 에서 캐시 지우기를 사용하세요.

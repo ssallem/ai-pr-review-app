@@ -33,10 +33,22 @@ interface Props {
   prUrl?: string;
   /** 'owner/repo' — Hero 배지 + AI 프롬프트 컨텍스트로 전달. */
   repoName?: string;
+  /** 최근 리뷰 캐시 hit 으로 복원된 결과인지 — Hero 배지 표시 여부. */
+  isCached?: boolean;
+  /** 캐시된 결과의 원분석 일자 (ko-KR 포맷). 예: "2026. 5. 22.". */
+  cachedDate?: string;
   onNewReview: () => void;
 }
 
-const Result: FC<Props> = ({ result, prTitle, prUrl, repoName, onNewReview }) => {
+const Result: FC<Props> = ({
+  result,
+  prTitle,
+  prUrl,
+  repoName,
+  isCached,
+  cachedDate,
+  onNewReview,
+}) => {
   const criticalCount = result.issues.filter((i) => i.severity === 'CRITICAL').length;
   const warningCount = result.issues.filter((i) => i.severity === 'WARNING').length;
   const suggestionCount = result.issues.filter((i) => i.severity === 'SUGGESTION').length;
@@ -62,12 +74,19 @@ const Result: FC<Props> = ({ result, prTitle, prUrl, repoName, onNewReview }) =>
         </div>
 
         {/* 프로젝트명 배지 — "어떤 프로젝트를 의뢰했는지" 즉시 인식 */}
-        {hasRepo && (
-          <div className="mb-3 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-100 text-sm font-mono font-semibold">
-              <span aria-hidden="true">📦</span>
-              {repoName}
-            </span>
+        {(hasRepo || isCached) && (
+          <div className="mb-3 flex items-center gap-2 flex-wrap">
+            {hasRepo && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-100 text-sm font-mono font-semibold">
+                <span aria-hidden="true">📦</span>
+                {repoName}
+              </span>
+            )}
+            {isCached === true && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-100 text-xs font-semibold">
+                ✓ 캐시됨{cachedDate !== undefined && cachedDate !== '' ? ` · ${cachedDate} 분석` : ''}
+              </span>
+            )}
           </div>
         )}
 
@@ -80,7 +99,7 @@ const Result: FC<Props> = ({ result, prTitle, prUrl, repoName, onNewReview }) =>
 
         {/* PR URL — 클릭 시 OS 기본 브라우저로 (Tauri 외부 링크 정책 그대로) */}
         {hasUrl && (
-          <p className="text-xs font-mono text-text-muted break-all">
+          <p className="text-xs font-mono text-text-muted dark:text-text-secondary break-all">
             <span aria-hidden="true">🔗 </span>
             <a
               href={prUrl}
@@ -107,7 +126,7 @@ const Result: FC<Props> = ({ result, prTitle, prUrl, repoName, onNewReview }) =>
               🤖 {totalInput.toLocaleString()} 입력 /{' '}
               {(u.output_tokens ?? 0).toLocaleString()} 출력 토큰
               {hasCache && (
-                <span className="ml-2 text-text-muted">
+                <span className="ml-2 text-text-muted dark:text-text-secondary">
                   (캐시 적중 {cacheRead.toLocaleString()} · 캐시 생성 {cacheCreate.toLocaleString()})
                 </span>
               )}
