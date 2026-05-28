@@ -42,6 +42,7 @@ import {
   type AuthMode,
   type RecentReview,
 } from '../lib/storage';
+import FolderTree from './FolderTree';
 
 interface Props {
   /** 사용자가 "리뷰 시작" 누르면 호출. 부모가 실제 fetch + reviewDiff 실행. */
@@ -258,6 +259,12 @@ const Input: FC<Props> = ({
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
+  /**
+   * 디렉토리 prefix 에 trailing slash 보장 — FolderTree 는 항상 trailing-slash 형태로
+   * 비교/방출하므로, 수동 입력에 slash 없이 적힌 값(예: 'src')도 트리에서 올바로 매칭되게 한다.
+   */
+  const normalizeDir = (s: string): string => (s.endsWith('/') ? s : `${s}/`);
+
   /** "사이즈 계산" 버튼. backend 의 estimateFullSourceSize 호출. */
   const handleEstimate = async (): Promise<void> => {
     if (repoParsed === null) return;
@@ -267,7 +274,7 @@ const Input: FC<Props> = ({
     try {
       const token = await getGithubToken();
       const options: FullSourceOptions = {
-        includePaths: splitFilter(filterPaths),
+        includePaths: splitFilter(filterPaths).map(normalizeDir),
         includeExts: splitFilter(filterExts),
         excludeDefaults: true,
       };
@@ -284,7 +291,7 @@ const Input: FC<Props> = ({
   const handleStartFullSource = (): void => {
     if (repoParsed === null || estimate === null) return;
     const options: FullSourceOptions = {
-      includePaths: splitFilter(filterPaths),
+      includePaths: splitFilter(filterPaths).map(normalizeDir),
       includeExts: splitFilter(filterExts),
       excludeDefaults: true,
     };
@@ -423,17 +430,25 @@ const Input: FC<Props> = ({
           </div>
 
           <div className="space-y-3 mb-4">
-            <label className="block">
-              <span className="text-sm font-semibold text-text-primary">디렉토리 필터 (선택)</span>
-              <input
-                type="text"
-                value={filterPaths}
-                onChange={(e) => setFilterPaths(e.target.value)}
-                placeholder="예: src/, lib/ (콤마 구분, 빈 값 = 전체)"
-                disabled={estimating || isReviewing}
-                className="mt-1 w-full px-3 py-2 rounded-md border border-border bg-surface text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 disabled:opacity-50"
+            <div className="space-y-2">
+              <span className="block text-sm font-semibold text-text-primary">디렉토리 필터 (선택)</span>
+              <FolderTree
+                parsed={repoParsed}
+                selected={splitFilter(filterPaths).map(normalizeDir)}
+                onChange={(paths) => setFilterPaths(paths.join(', '))}
               />
-            </label>
+              <label className="block">
+                <span className="text-xs text-text-muted">수동 입력 (선택, 콤마 구분)</span>
+                <input
+                  type="text"
+                  value={filterPaths}
+                  onChange={(e) => setFilterPaths(e.target.value)}
+                  placeholder="예: src/, lib/ (콤마 구분, 빈 값 = 전체, 끝에 / 권장)"
+                  disabled={estimating || isReviewing}
+                  className="mt-1 w-full px-3 py-2 rounded-md border border-border bg-surface text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 disabled:opacity-50"
+                />
+              </label>
+            </div>
             <label className="block">
               <span className="text-sm font-semibold text-text-primary">확장자 필터 (선택)</span>
               <input
